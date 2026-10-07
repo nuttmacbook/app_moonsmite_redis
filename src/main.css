@@ -16,6 +16,25 @@ body {
     text-size-adjust: 100%;
 }
 
+/* touch-action does not carry into a scroll container (the strike modal scrolls), so the
+   rule above never reached the minigame text and a quick double tap zoomed the page.
+   Every element gets it; utilities such as touch-none still win (they sit in a later layer). */
+@layer base {
+    *,
+    *::before,
+    *::after {
+        touch-action: manipulation;
+    }
+}
+
+/* Strike modal: fast taps must not select text or open the iOS long-press menu */
+#strike-root {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+}
+
 /* iOS zooms in when a field under 16px gets focus */
 input,
 select,

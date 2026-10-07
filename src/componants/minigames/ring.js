@@ -1,4 +1,5 @@
 import { rng, countdown, buzz, chips, forgeSparks, shake, callout, verdict, weaponStage, setHeat } from "./kit";
+import { sound } from "../sound";
 import { average, ringPlan, ringScale, ringTapScore, RING_START_SCALE } from "../../game/scoring";
 
 // The strike minigame: rings close in on glowing targets. Tap anywhere the moment a ring lands.
@@ -88,6 +89,8 @@ const mountRing = (el, roll = {}, onDone) => {
         scores.push(score);
         el.querySelector("[data-chips]").innerHTML = chips(blows, scores);
 
+        if (isTap) sound.sfx.hammer(score);
+        else sound.sfx.miss();
         if (isTap) {
             forgeSparks(stage, target.x, target.y, score);
             shake(panel, score);

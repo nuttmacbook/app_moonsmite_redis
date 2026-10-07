@@ -24,6 +24,7 @@ import { notify } from "./componants/txModal";
 import { askReferrer } from "./componants/referralSheet";
 import { showGame, showScoring, showResult, showPracticeResult, hideStrike } from "./componants/strikeModal";
 import { formatDuration } from "./componants/ui";
+import { sound } from "./componants/sound";
 
 const REF_KEY = "forge-ref";
 const PAGE_SIZE = 20;
@@ -37,6 +38,7 @@ let marketFresh = false;
 let refreshing = null;
 let isRefreshQueued = false;
 let isMoving = false;
+let isOfflineShown = false;
 
 /* -------------------------------------------------------------- data */
 
@@ -66,6 +68,12 @@ async function getContractData(wallet) {
     // Furnace speed is set on-chain by the owner; the rules follow it
     const rate = { pointsPerHour: Number(furnaceRate?.[0] ?? 3), maxPoints: Number(furnaceRate?.[2] ?? 1000) };
     const game = await forge.loadState(isConnected ? account : "", ids, chainSwords, Number(getAccount?.[0]?.furnaces ?? 3), rate, now);
+    // Game server down: the page still works from the chain; say why progress is missing, once
+    if (game.offline && !isOfflineShown) {
+        isOfflineShown = true;
+        notify.error(new Error(`${game.offline} Your weapons show their last saved progress until it is back.`));
+    }
+    if (!game.offline) isOfflineShown = false;
     const playerId = String(getAccount?.[0]?.id ?? "0");
 
     return {
@@ -152,7 +160,7 @@ function applyGame(out) {
  */
 async function moveLocalProgress() {
     const ids = Array.from(data?.userInfo?.[0] ?? [], String);
-    if (isMoving || !data?.account || !forge.hasLocalProgress(data.account, ids)) return;
+    if (isMoving || !data?.account || data?.game?.offline || !forge.hasLocalProgress(data.account, ids)) return;
     isMoving = true;
     try {
         await ensureSession(data.account.toLowerCase());
@@ -504,11 +512,13 @@ window.sendTo = guard(async (tokenId) => {
 
 window.heatSword = guard(async (tokenId) => {
     applyGame(await forge.startFurnace(data?.account, tokenId));
+    sound.sfx.ignite();
     window.scrollTo({ top: 0, behavior: "smooth" });
 });
 
 window.takeOut = guard(async (tokenId) => {
     const out = await forge.stopFurnace(data?.account, tokenId);
+    sound.sfx.quench(90);
     notify.success({
         title: `+${Number(out?.result?.earned ?? 0)} strike points`,
         desc: `Heated for ${formatDuration(out?.result?.heated)}. NFT #${tokenId} now has ${Number(out?.result?.points ?? 0)} points to strike.`,

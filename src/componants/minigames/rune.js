@@ -1,4 +1,5 @@
 import { countdown, announce, buzz, chips, forgeSparks, shake } from "./kit";
+import { sound } from "../sound";
 import { average, runePlan, runeRoundScore, RUNE_COUNT } from "../../game/scoring";
 
 // Rune memory: 12 runes light up around the weapon one by one, clockwise from 12 o'clock, each
@@ -123,6 +124,7 @@ const mountRune = (el, roll = {}, onDone) => {
         runes.forEach((r, i) => later(() => {
             r.button.style.opacity = "1";
             r.button.animate?.([ { transform: "scale(0.3)" }, { transform: "scale(1.15)" }, { transform: "scale(1)" } ], { duration: 220, easing: "ease-out" });
+            sound.sfx.runeReveal(i);
             buzz(4);
         }, i * step));
 
@@ -136,6 +138,7 @@ const mountRune = (el, roll = {}, onDone) => {
                     { transform: "translate(-50%,-55%) scale(1.15)", opacity: 1 },
                 ], { duration: 300 + Math.random() * 200, iterations: Infinity, direction: "alternate", easing: "ease-in-out" });
             });
+            sound.sfx.runeArm();
             buzz([ 10, 30, 10 ]);
         }, revealMs + 150);
 
@@ -170,6 +173,7 @@ const mountRune = (el, roll = {}, onDone) => {
             if (r.color === want) {
                 // Right: the rune bursts
                 right++;
+                sound.sfx.runeRight(right);
                 forgeSparks(stage, r.x, r.y, 90);
                 buzz(14);
                 r.wrap.animate?.([ { transform: "translate(-50%,-50%) scale(1)", opacity: 1 }, { transform: "translate(-50%,-50%) scale(1.8)", opacity: 0 } ], { duration: 260, fill: "forwards" });
@@ -177,6 +181,7 @@ const mountRune = (el, roll = {}, onDone) => {
             } else {
                 // Wrong: show what it really was
                 wrong++;
+                sound.sfx.runeWrong();
                 r.button.className = r.button.className.replace(COLOR.blue.rune, COLOR[r.color].rune);
                 r.fireball.classList.add("hidden");
                 shake(panel, 20);
@@ -213,6 +218,7 @@ const mountRune = (el, roll = {}, onDone) => {
 
             const label = grade(score);
             later(() => {
+                sound.sfx.grade(score);
                 announce(stage, label, 1000, score >= 70 ? "text-sky-200" : score >= 30 ? "text-amber-200" : "text-slate-300", "text-5xl");
                 if (score >= 70) shake(panel, score);
                 buzz(score >= 70 ? [ 14, 30, 14 ] : 20);

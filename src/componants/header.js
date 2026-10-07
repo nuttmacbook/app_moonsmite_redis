@@ -1,5 +1,6 @@
 import { shortAddress } from "../web3/connect";
 import { BUTTON, FOCUS, CARD, money } from "./ui";
+import { sound } from "./sound";
 
 const ICONS = {
     mint:    `<path d="M12 3v4m0 10v4M3 12h4m10 0h4M6.3 6.3l2.8 2.8m5.8 5.8 2.8 2.8m0-11.4-2.8 2.8m-5.8 5.8-2.8 2.8" stroke-linecap="round"/>`,
@@ -7,6 +8,8 @@ const ICONS = {
     armory:  `<path d="M5 19 16 8m2-4 2 2-3 3-2-2 3-3ZM4 16l4 4" stroke-linecap="round" stroke-linejoin="round"/>`,
     moon:    `<path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z" stroke-linejoin="round"/>`,
     profile: `<circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6" stroke-linecap="round"/>`,
+    soundOn: `<path d="M4 9v6h4l5 4V5L8 9H4Z" stroke-linejoin="round"/><path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12" stroke-linecap="round"/>`,
+    soundOff: `<path d="M4 9v6h4l5 4V5L8 9H4Z" stroke-linejoin="round"/><path d="m17 9 5 6m0-6-5 6" stroke-linecap="round"/>`,
 };
 
 const TABS = [
@@ -41,6 +44,54 @@ if (typeof window !== "undefined") {
     };
 }
 
+/** Speaker in the header: on while either music or effects play */
+const soundIcon = () => {
+    const p = sound.prefs();
+    return icon(p.music || p.sfx ? "soundOn" : "soundOff");
+};
+
+/** A labelled on/off switch for the sound sheet */
+const toggle = (key, label, desc, isOn) => /*html*/`
+    <button type="button" role="switch" aria-checked="${isOn}" onclick="toggleSound('${key}')"
+        class="flex w-full items-center justify-between gap-3 py-3 text-left ${FOCUS}">
+        <span class="min-w-0">
+            <span class="block text-sm font-semibold text-amber-50">${label}</span>
+            <span class="block text-xs text-slate-400">${desc}</span>
+        </span>
+        <span class="relative h-6 w-11 shrink-0 rounded-full transition ${isOn ? "bg-amber-400" : "bg-slate-700"}">
+            <span class="absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ${isOn ? "left-[22px]" : "left-0.5"}"></span>
+        </span>
+    </button>
+`;
+
+if (typeof window !== "undefined") {
+    window.openSoundMenu = () => {
+        const el = document.querySelector("#sheet-root");
+        if (!el) return;
+        const p = sound.prefs();
+        window.closeSoundMenu = () => (el.innerHTML = "");
+        el.innerHTML = /*html*/`
+            <div class="fixed inset-0 z-50 flex items-end justify-center bg-indigo-950/70 backdrop-blur-sm sm:items-start sm:justify-end sm:p-4" data-backdrop onclick="if (event.target === this) closeSoundMenu()">
+                <div class="${CARD} w-full max-w-sm p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom,0px))] sm:mt-14" role="dialog" aria-modal="true" aria-labelledby="sound-menu-title">
+                    <div class="mx-auto mb-4 h-1 w-10 rounded-full bg-amber-200/30 sm:hidden"></div>
+                    <p id="sound-menu-title" class="text-[11px] uppercase tracking-wider text-slate-400">Sound</p>
+                    <div class="mt-1 divide-y divide-white/10">
+                        ${toggle("music", "Music", "Forge theme, and drums in the minigames", p.music)}
+                        ${toggle("sfx", "Effects", "Hammer, flame, runes and the countdown", p.sfx)}
+                    </div>
+                    <button type="button" onclick="closeSoundMenu()" class="${BUTTON.ghost} mt-4 w-full">Done</button>
+                </div>
+            </div>
+        `;
+    };
+
+    window.toggleSound = (key) => {
+        sound.setPref(key, !sound.prefs()[key]);
+        window.openSoundMenu();
+        document.querySelectorAll("[data-sound-icon]").forEach((el) => (el.innerHTML = soundIcon()));
+    };
+}
+
 const icon = (id, cls = "h-5 w-5") => `<svg viewBox="0 0 24 24" class="${cls}" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">${ICONS[id]}</svg>`;
 
 const header = (data) => {
@@ -64,8 +115,10 @@ const header = (data) => {
                 `).join("")}
             </nav>
 
-            <!-- Wallet -->
-            <div class="ml-auto flex min-w-0 items-center">
+            <!-- Sound and wallet -->
+            <div class="ml-auto flex min-w-0 items-center gap-2">
+                <button type="button" onclick="openSoundMenu()" aria-label="Sound settings" data-sound-icon
+                    class="cut grid h-10 w-10 shrink-0 place-items-center bg-white/[0.06] text-amber-100 shadow-[inset_0_0_0_1px_rgba(252,211,77,0.3)] hover:bg-white/10 ${FOCUS}">${soundIcon()}</button>
                 ${isConnected ? /*html*/`
                     <button type="button" onclick="openWalletMenu('${data.wallet.address}', '${data?.balance ?? 0}')" aria-label="Wallet menu"
                         class="cut flex min-w-0 items-center gap-2 bg-white/[0.06] py-1.5 pl-2.5 pr-2 text-right shadow-[inset_0_0_0_1px_rgba(252,211,77,0.3)] hover:bg-white/10 ${FOCUS}">

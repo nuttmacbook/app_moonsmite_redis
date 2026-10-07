@@ -1,4 +1,5 @@
 import { countdown, buzz, chips, forgeSparks, shake, callout, verdict } from "./kit";
+import { sound } from "../sound";
 import { average, burnPlan, burnHoldScore } from "../../game/scoring";
 
 // Flame burn: hold anywhere to blow fire on the weapon and let go when it reaches the target heat.
@@ -182,6 +183,7 @@ const mountBurn = (el, roll = {}, onDone) => {
         if (isHolding) {
             const s = heldSec();
             paint(s / heatSec);
+            sound.sfx.flameHeat(s / heatSec);
             // Way past black: let go for the player
             if (s > plan.maxHeldSec) release();
         }
@@ -215,11 +217,13 @@ const mountBurn = (el, roll = {}, onDone) => {
         ], { duration: 120, iterations: Infinity, direction: "alternate" }) ?? null;
         burn();
         fireTimer = setInterval(burn, 35);
+        sound.sfx.flameStart();
         buzz(10);
     };
 
     const stopFire = () => {
         clearInterval(fireTimer);
+        sound.sfx.flameStop();
         jetFlicker?.cancel();
         jet.style.opacity = "0";
     };
@@ -236,6 +240,7 @@ const mountBurn = (el, roll = {}, onDone) => {
         const held = Math.min((hold.up - hold.down) / 1000, plan.maxHeldSec);
         const score = burnHoldScore(plan, target, held);
         scores.push(score);
+        sound.sfx.quench(score);
         el.querySelector("[data-chips]").innerHTML = chips(blows, scores);
 
         // Show how close it was, then cool the weapon down for the next one

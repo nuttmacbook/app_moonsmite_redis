@@ -1,3 +1,5 @@
+import { sound } from "../sound";
+
 // Shared pieces for the strike minigame: phone first (whole stage is the tap target),
 // haptics where the phone supports them, and a blade on an anvil to hit.
 
@@ -56,15 +58,21 @@ const countdown = (stage, difficulty, onGo) => {
         timers.push(setTimeout(() => {
             if (isCancelled) return;
             timers.push(announce(stage, String(value), BEAT_MS));
+            sound.sfx.tick();
             buzz(8);
         }, at));
         at += BEAT_MS;
     }
-    timers.push(setTimeout(() => !isCancelled && timers.push(announce(stage, LEVELS[level].label, LEVEL_MS, LEVEL_TONE[level], "text-5xl")), at));
+    timers.push(setTimeout(() => {
+        if (isCancelled) return;
+        timers.push(announce(stage, LEVELS[level].label, LEVEL_MS, LEVEL_TONE[level], "text-5xl"));
+        sound.sfx.drum();
+    }, at));
     at += LEVEL_MS;
     timers.push(setTimeout(() => {
         if (isCancelled) return;
         timers.push(announce(stage, "Start!", START_MS, "text-amber-200", "text-6xl"));
+        sound.sfx.gong();
         buzz([ 20, 40, 20 ]);
     }, at));
     at += START_MS * 0.6;

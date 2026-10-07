@@ -4,6 +4,7 @@ import { mountRing } from "./minigames/ring";
 import { mountBurn } from "./minigames/burn";
 import { mountRune } from "./minigames/rune";
 import { LEVELS } from "./minigames/kit";
+import { sound } from "./sound";
 
 // The minigames a strike can roll (see MINIGAME.games in game/rules.js)
 const GAMES = {
@@ -27,6 +28,32 @@ const GAMES = {
 const root = () => document.querySelector("#strike-root");
 
 let cleanup = () => {};
+let unlockZoom = () => {};
+
+/**
+ * While a strike is open, nothing may zoom the page: iOS Safari ignores user-scalable=no for
+ * pinches and can still zoom on a fast double tap over text, which made players lose a round.
+ * @returns {() => void} undoes it
+ */
+const lockZoom = () => {
+    const stop = (e) => e.preventDefault();
+    let lastTouch = 0;
+    const onTouchEnd = (e) => {
+        const now = e.timeStamp;
+        // Second tap within 350ms on anything but a button is a zoom gesture: drop it
+        if (now - lastTouch < 350 && !e.target.closest?.("button, a, input, select, textarea")) e.preventDefault();
+        lastTouch = now;
+    };
+    const el = root();
+    document.addEventListener("gesturestart", stop, { passive: false });
+    document.addEventListener("dblclick", stop, { passive: false });
+    el?.addEventListener("touchend", onTouchEnd, { passive: false });
+    return () => {
+        document.removeEventListener("gesturestart", stop);
+        document.removeEventListener("dblclick", stop);
+        el?.removeEventListener("touchend", onTouchEnd);
+    };
+};
 
 /** Header line for a real strike (NFT and value) or a practice round */
 const heading = (sword, isPractice) => isPractice ? /*html*/`
@@ -63,6 +90,9 @@ const showGame = (session, sword, onScore) => {
     if (!el) return;
 
     cleanup();
+    unlockZoom();
+    unlockZoom = lockZoom();
+    sound.music("battle", session?.difficulty);
     el.innerHTML = shell(sword, /*html*/`
         <div class="flex items-center justify-between gap-3">
             <h2 id="strike-title" class="font-display text-base font-semibold uppercase tracking-wide text-amber-50">${session?.isPractice ? `Practice · ${game.title}` : game.title}</h2>
@@ -90,6 +120,8 @@ const showResult = (result, sword) => {
     const points = Number(result?.points ?? 0);
     const score = Number(result?.score ?? 0);
     const verdict = score >= 95 ? "Perfect strike" : score >= 75 ? "Clean strike" : score >= 40 ? "Rough strike" : "Glancing blow";
+    sound.music("menu");
+    sound.sfx.result(score);
 
     el.innerHTML = shell({ ...sword, value: result?.value }, /*html*/`
         <h2 id="strike-title" class="font-display text-lg font-semibold uppercase tracking-wide text-white">${verdict}</h2>
@@ -120,6 +152,8 @@ const showPracticeResult = (score, sword) => {
     const el = root();
     if (!el) return;
     const verdict = score >= 95 ? "Perfect strike" : score >= 75 ? "Clean strike" : score >= 40 ? "Rough strike" : "Glancing blow";
+    sound.music("menu");
+    sound.sfx.result(score);
 
     el.innerHTML = shell(sword, /*html*/`
         <h2 id="strike-title" class="font-display text-lg font-semibold uppercase tracking-wide text-white">${verdict}</h2>
@@ -139,6 +173,10 @@ const showPracticeResult = (score, sword) => {
 const hideStrike = () => {
     cleanup();
     cleanup = () => {};
+    unlockZoom();
+    unlockZoom = () => {};
+    sound.sfx.flameStop();
+    sound.music("menu");
     const el = root();
     if (el) el.innerHTML = "";
 };
