@@ -55,8 +55,11 @@ const lockZoom = () => {
     };
 };
 
-/** Header line for a real strike (NFT and value) or a practice round */
-const heading = (sword, isPractice) => isPractice ? /*html*/`
+/** Header line for a real strike (NFT and value), a practice round, or a labelled one (exam, smith job) */
+const heading = (sword, isPractice) => sword?.label ? /*html*/`
+    <p class="truncate text-xs text-slate-400">${sword.sublabel ?? ""}</p>
+    <p class="font-mono text-sm font-semibold text-amber-200">${sword.label}</p>
+` : isPractice ? /*html*/`
     <p class="truncate text-xs text-slate-400">${itemName(sword?.seed)}</p>
     <p class="font-mono text-sm font-semibold text-amber-200">Practice · no points used</p>
 ` : /*html*/`
@@ -170,6 +173,69 @@ const showPracticeResult = (score, sword) => {
     el.querySelector("[onclick^='openPractice']")?.focus();
 };
 
+const verdictOf = (score) => (score >= 95 ? "Perfect strike" : score >= 75 ? "Clean strike" : score >= 40 ? "Rough strike" : "Glancing blow");
+
+/** A smith's strike on someone else's weapon: the score, what it added, and the wage it earned */
+const showHireResult = (result, sword) => {
+    const el = root();
+    if (!el) return;
+    const points = Number(result?.points ?? 0);
+    const score = Number(result?.score ?? 0);
+    const canGoOn = points > 0 && !result?.isJobOver;
+    sound.music("menu");
+    sound.sfx.result(score);
+
+    el.innerHTML = shell({ ...sword, value: result?.value }, /*html*/`
+        <h2 id="strike-title" class="font-display text-lg font-semibold uppercase tracking-wide text-white">${verdictOf(score)}</h2>
+        <div class="mt-5 grid grid-cols-3 gap-3 bg-slate-950/60 p-4 text-center ring-1 ring-inset ring-cyan-300/15">
+            <div>
+                <p class="text-[11px] text-slate-500">Quality</p>
+                <p class="font-mono text-2xl font-bold tabular-nums text-fuchsia-200">${score}</p>
+            </div>
+            <div>
+                <p class="text-[11px] text-slate-500">Your wage</p>
+                <p class="font-mono text-lg font-semibold tabular-nums text-emerald-300">+${coins(result?.wage, 6)}</p>
+                <p class="text-[10px] text-slate-500">${Number(result?.share ?? 0)}% of +${coins(result?.increase, 6)}</p>
+            </div>
+            <div>
+                <p class="text-[11px] text-slate-500">Points left</p>
+                <p class="font-mono text-2xl font-bold tabular-nums text-white">${points}</p>
+            </div>
+        </div>
+        ${result?.isJobOver ? `<p class="mt-3 text-xs text-amber-200">That was the weapon's last point. The job is done; your wage waits for the owner to pay.</p>` : ""}
+        <div class="mt-5 flex justify-end gap-2">
+            <button type="button" onclick="closeStrike()" class="${BUTTON.ghost}">Done</button>
+            ${canGoOn ? `<button type="button" onclick="openHireStrike()" class="${BUTTON.heat}">Strike again</button>` : ""}
+        </div>
+    `);
+    el.querySelector("[onclick^='openHireStrike']")?.focus();
+};
+
+/** End of the licensing exam: the license score and every round's score */
+const showExamResult = (result) => {
+    const el = root();
+    if (!el) return;
+    const score = Number(result?.score ?? 0);
+    const isBest = score >= Number(result?.best ?? 0);
+    sound.music("menu");
+    sound.sfx.result(score);
+
+    el.innerHTML = shell({ seed: 1, label: "Licensing exam", sublabel: "Smith license" }, /*html*/`
+        <h2 id="strike-title" class="font-display text-lg font-semibold uppercase tracking-wide text-white">Exam complete</h2>
+        <div class="mt-5 bg-slate-950/60 p-4 text-center ring-1 ring-inset ring-cyan-300/15">
+            <p class="text-[11px] text-slate-500">License score</p>
+            <p class="font-mono text-4xl font-bold tabular-nums text-amber-200">${score}</p>
+            <p class="mt-1 text-xs ${isBest ? "text-emerald-300" : "text-slate-400"}">${isBest ? "New best score" : `Your best stays ${Number(result?.best ?? 0)}`}</p>
+        </div>
+        <div class="mt-3 grid grid-cols-6 gap-1.5 font-mono text-xs tabular-nums">
+            ${(result?.scores ?? []).map((x) => `<span class="bg-white/[0.05] py-1 text-center ${x >= 75 ? "text-emerald-300" : x >= 40 ? "text-amber-100" : "text-rose-300"}">${x}</span>`).join("")}
+        </div>
+        <div class="mt-5 flex justify-end gap-2">
+            <button type="button" onclick="closeStrike()" class="${BUTTON.primary}">Find jobs</button>
+        </div>
+    `);
+};
+
 const hideStrike = () => {
     cleanup();
     cleanup = () => {};
@@ -181,4 +247,4 @@ const hideStrike = () => {
     if (el) el.innerHTML = "";
 };
 
-export { showGame, showScoring, showResult, showPracticeResult, hideStrike };
+export { showGame, showScoring, showResult, showPracticeResult, showHireResult, showExamResult, hideStrike };

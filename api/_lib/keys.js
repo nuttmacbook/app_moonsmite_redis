@@ -31,6 +31,9 @@ const keys = {
     // This version's own pause flag: the previous version's flag (set while the admin copies its
     // data) does not apply here, so the game opens as soon as this version is live
     maintenance: () => `ms:${scopeOf()}:maintenance:v2`,
+    // Hire: one document per smith (license, current job, wages waiting) and the jobs board index
+    smith: (wallet) => `ms:${scopeOf()}:smith:${lower(wallet)}`,
+    jobs: () => `ms:${scopeOf()}:jobs`,
     // Patterns for the admin tools (SCAN MATCH)
     swordPattern: () => `ms:${scopeOf()}:sword:*`,
     statsPattern: () => `ms:${scopeOf()}:stats:*`,

@@ -2,6 +2,11 @@ import "./main.css";
 import { box, getRpc, disconnectWallet } from "./web3/connect";
 import { Forge } from "./web3/contracts/contract_forge";
 import { Coin } from "./web3/contracts/contract_coin";
+import { Wages } from "./web3/contracts/contract_wages";
+import { payWages } from "./web3/intereacts/payWages";
+import { claimWages } from "./web3/intereacts/claimWages";
+import * as hire from "./game/hire";
+import { HIRE } from "./game/rules";
 import { mintSword } from "./web3/intereacts/mintSword";
 import { buyListed } from "./web3/intereacts/buyListed";
 import { listSword } from "./web3/intereacts/listSword";
@@ -19,10 +24,12 @@ import { mint } from "./componants/mint";
 import { marketplace, marketResults } from "./componants/marketplace";
 import { armory, selectedForSave } from "./componants/armory";
 import { profile } from "./componants/profile";
+import { smith, jobsResults } from "./componants/smith";
+import { itemName } from "./componants/itemArt";
 import { footer } from "./componants/footer";
 import { notify } from "./componants/txModal";
 import { askReferrer } from "./componants/referralSheet";
-import { showGame, showScoring, showResult, showPracticeResult, hideStrike } from "./componants/strikeModal";
+import { showGame, showScoring, showResult, showPracticeResult, showHireResult, showExamResult, hideStrike } from "./componants/strikeModal";
 import { formatDuration } from "./componants/ui";
 import { sound } from "./componants/sound";
 
@@ -39,6 +46,10 @@ let refreshing = null;
 let isRefreshQueued = false;
 let isMoving = false;
 let isOfflineShown = false;
+// Smith jobs are on once the Wages contract address is set (VITE_WAGES_ADDRESS)
+const isHireOn = Boolean(Wages.address);
+let jobsView = { items: [], filter: "mine", isLoading: true, now: 0 };
+let cancelExamRound = null;
 
 /* -------------------------------------------------------------- data */
 
@@ -57,17 +68,22 @@ async function getContractData(wallet) {
             { contract: Coin, method: "balanceOf", args: [ account ] },
             { contract: Forge, method: "referralPool" },
             { contract: Forge, method: "getGuild", args: [ account ] },
+            // Smith wages paid in and claimed (Wages contract); last, so the reads above keep their places
+            ...(isHireOn ? [ { contract: Wages, method: "getSmithInfo", args: [ account ] } ] : []),
         ] : []),
     ];
     const { results, now } = await multicall(calls);
-    const [ getDappInfo, getShelf, furnaceRate, getUserInfo = [ [], [] ], getAccount = null, balance = "0", referralPool = "0", getGuild = null ] = results;
+    const [ getDappInfo, getShelf, furnaceRate, getUserInfo = [ [], [] ], getAccount = null, balance = "0", referralPool = "0", getGuild = null, wagesInfo = null ] = results;
 
     // Swords, furnaces and progress come from the game server, settled on this chain snapshot
     const ids = Array.from(getUserInfo?.[0] ?? [], String);
     const chainSwords = Array.from(getUserInfo?.[1] ?? []);
     // Furnace speed is set on-chain by the owner; the rules follow it
     const rate = { pointsPerHour: Number(furnaceRate?.[0] ?? 3), maxPoints: Number(furnaceRate?.[2] ?? 1000) };
-    const game = await forge.loadState(isConnected ? account : "", ids, chainSwords, Number(getAccount?.[0]?.furnaces ?? 3), rate, now);
+    const [ game, smithPage ] = await Promise.all([
+        forge.loadState(isConnected ? account : "", ids, chainSwords, Number(getAccount?.[0]?.furnaces ?? 3), rate, now),
+        isHireOn && isConnected ? hire.loadSmith(account) : null,
+    ]);
     // Game server down: the page still works from the chain; say why progress is missing, once
     if (game.offline && !isOfflineShown) {
         isOfflineShown = true;
@@ -89,6 +105,9 @@ async function getContractData(wallet) {
         feeBps: Number(getDappInfo?.[6] ?? 50),
         guild: getGuild,
         game,
+        isHireOn,
+        smith: smithPage,
+        wagesInfo,
         profile: isConnected ? { stats: forge.getStats() } : null,
         playerId,
         // Short invite link by player id
@@ -114,10 +133,11 @@ function paint(next) {
             ${panel("mint", mint(next) + footer(next))}
             ${panel("market", marketplace(next, marketQuery, marketState))}
             ${panel("armory", armory(next))}
+            ${isHireOn ? panel("smith", smith(next, jobsView)) : ""}
             ${panel("profile", profile(next))}
         </main>
         <div class="h-28 sm:h-12" aria-hidden="true"></div>
-        ${bottomNav({ tab })}
+        ${bottomNav({ tab, isHireOn })}
     `;
     tick();
 }
@@ -150,7 +170,7 @@ async function refresh() {
 /** A game-server change answers with the new armory state: redraw it without reading the chain */
 function applyGame(out) {
     if (!out?.game) return;
-    data = { ...data, game: out.game, profile: data?.account ? { stats: out.stats ?? forge.getStats() } : null, fetchedAt: Date.now() / 1000 };
+    data = { ...data, game: { ...out.game, hire: out.hire ?? data?.game?.hire ?? null }, profile: data?.account ? { stats: out.stats ?? forge.getStats() } : null, fetchedAt: Date.now() / 1000 };
     paint(data);
 }
 
@@ -229,6 +249,44 @@ function tick() {
 }
 
 setInterval(tick, 1000);
+
+/* ------------------------------------------------------------- smith */
+
+const renderJobs = () => {
+    const el = document.querySelector("[data-jobs-results]");
+    if (el) el.innerHTML = jobsResults(jobsView, data);
+    tick();
+};
+
+/** The hire board is one shared copy on the server; the page asks for it when the tab opens */
+async function loadJobs() {
+    if (!isHireOn) return;
+    jobsView = { ...jobsView, isLoading: !jobsView.items.length };
+    renderJobs();
+    try {
+        const out = await hire.loadJobs();
+        jobsView = { ...jobsView, items: out?.items ?? [], now: Number(out?.now ?? 0), isLoading: false };
+    } catch (err) {
+        console.error(err);
+        jobsView = { ...jobsView, isLoading: false };
+        notify.error(err);
+    }
+    repaintSmith();
+}
+
+/** Redraws the Smith tab only (license, job, wages and board) */
+function repaintSmith() {
+    const el = document.querySelector('[data-tab-panel="smith"]');
+    if (el) el.innerHTML = smith(data, jobsView);
+    tick();
+}
+
+/** A smith action answers with the smith's new page */
+function applySmith(page) {
+    if (!page) return;
+    data = { ...data, smith: page };
+    repaintSmith();
+}
 
 /* ------------------------------------------------------------ market */
 
@@ -407,6 +465,7 @@ window.switchTab = (id) => {
     });
     window.scrollTo({ top: 0 });
     if (id === "market") loadMarket();
+    if (id === "smith") loadJobs();
 };
 
 window.connectWallet = guard(async () => {
@@ -554,11 +613,142 @@ window.openPractice = () => {
     showGame(roll, sword, (score) => showPracticeResult(score, sword));
 };
 
-// An unfinished strike is just dropped: the point is only spent when a finished strike is sent
+// An unfinished strike is just dropped: the point is only spent when a finished strike is sent.
+// Closing during the exam ends it; the same rounds come back until it is handed in.
 window.closeStrike = async () => {
+    cancelExamRound?.();
+    cancelExamRound = null;
     hideStrike();
     paint(data);
 };
+
+/* ------------------------------------------------------------- hire */
+
+// Licensing exam: every minigame at every level, one after another, handed in together
+window.startExam = guard(async () => {
+    const account = data?.account;
+    if (!account) return;
+    const exam = await hire.startExam(account);
+    const logs = [];
+    for (let i = 0; i < exam.rounds.length; i++) {
+        const round = exam.rounds[i];
+        const label = { seed: i + 1, label: `Round ${i + 1} of ${exam.rounds.length}`, sublabel: "Licensing exam" };
+        const log = await new Promise((resolve) => {
+            cancelExamRound = () => resolve(null);
+            showGame(round, label, (score, roundLog) => resolve(roundLog));
+        });
+        if (!log) return;
+        logs.push(log);
+    }
+    cancelExamRound = null;
+    showScoring();
+    try {
+        const out = await hire.finishExam(account, exam.ticket, logs);
+        applySmith(out?.smith);
+        showExamResult(out?.result);
+        loadJobs();
+    } catch (err) {
+        hideStrike();
+        throw err;
+    }
+});
+
+window.filterJobs = (filter) => {
+    jobsView = { ...jobsView, filter };
+    repaintSmith();
+};
+
+window.refreshJobs = () => loadJobs();
+
+window.takeSmithJob = guard(async (from, tokenId) => {
+    const out = await hire.takeJob(data?.account, from, tokenId);
+    applySmith(out?.smith);
+    notify.success({ title: `Job taken: NFT #${tokenId}`, desc: `It stays yours while you keep striking (${Math.round(HIRE.lockIdleSec / 60)} minutes idle frees it). Strike it from the Smith tab.` });
+    loadJobs();
+});
+
+window.releaseSmithJob = guard(async () => {
+    const out = await hire.releaseJob(data?.account);
+    applySmith(out?.smith);
+    loadJobs();
+});
+
+window.openHireStrike = guard(async () => {
+    const account = data?.account;
+    const job = data?.smith?.job;
+    const session = await hire.startHireStrike(account);
+    const sword = {
+        tokenId: session.tokenId, seed: job?.seed, value: job?.value,
+        label: `Smith job · your share ${session.share}%`, sublabel: `NFT #${session.tokenId}, ${itemName(job?.seed)}`,
+    };
+    showGame(session, sword, async (score, log) => {
+        showScoring();
+        try {
+            const out = await hire.finishHireStrike(account, session, log);
+            applySmith(out?.smith);
+            showHireResult(out?.result, sword);
+        } catch (err) {
+            console.error(err);
+            hideStrike();
+            notify.error(err);
+            await refresh();
+        }
+    });
+});
+
+window.claimSmithWages = () => runTx(
+    null,
+    async () => claimWages(await box.getCurrentState(), { onStep: notify.pending }),
+    { title: "Wages claimed", desc: "The MWLD is in your wallet." },
+);
+
+// Owner side: put a weapon on the hire board, take it off, block a smith, pay what it owes
+window.openHireOut = guard(async (tokenId) => {
+    const minScore = document.querySelector(`[data-hire-score="${tokenId}"]`)?.value;
+    const share = document.querySelector(`[data-hire-share="${tokenId}"]`)?.value;
+    const out = await hire.openHire(data?.account, tokenId, minScore, share);
+    notify.success({ title: `NFT #${tokenId} is on the hire board`, desc: `Smiths with license ${out?.result?.minScore}+ can strike it for ${out?.result?.share}% of the value they add.` });
+    applyGame(out);
+});
+
+window.closeHireOut = guard(async (tokenId) => {
+    const out = await hire.closeHire(data?.account, tokenId);
+    notify.success({
+        title: out?.result?.isClosing ? "Closing after this smith" : `NFT #${tokenId} is off the hire board`,
+        desc: out?.result?.isClosing ? "A smith is on it now. It comes off the board when they stop." : "Pay any wages it owes, then heat, save or sell it as usual.",
+    });
+    applyGame(out);
+});
+
+window.blockHireSmith = guard(async (who) => {
+    const out = await hire.blockSmith(data?.account, who);
+    notify.success({ title: "Smith blocked", desc: "They can't take your jobs any more." });
+    applyGame(out);
+});
+
+window.payHireWages = guard(async (tokenId) => {
+    const wallet = await requireWallet();
+    if (!wallet) return;
+    const account = String(data?.account).toLowerCase();
+    await ensureSession(account);
+    notify.pending({ stage: "signing" });
+    const bill = await hire.billWages(account, tokenId);
+    // A payment that reached the chain earlier but was never counted: counted now, nothing to pay
+    if (bill?.isPaid) {
+        notify.success({ title: "Wages already paid", desc: "That payment is counted now." });
+        await refresh();
+        return;
+    }
+    await runTx(
+        wallet,
+        async (w) => {
+            const receipt = await payWages(w, bill, { onStep: notify.pending });
+            await hire.confirmWages(account, bill.token);
+            return receipt;
+        },
+        { title: "Wages paid", desc: "The smiths can claim them now. This weapon can heat, save and sell again." },
+    );
+});
 
 /* ----------------------------------------------------- market search */
 

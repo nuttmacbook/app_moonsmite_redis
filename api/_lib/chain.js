@@ -1,7 +1,7 @@
 // Chain reads for the game server. Every request is one eth_call through Multicall3
 // (already deployed on BSC and BSC testnet), so a whole wallet costs a single RPC request.
 // Env: FORGE_ADDRESS (or VITE_FORGE_ADDRESS), RPC_URL (server only; falls back to VITE_RPC_URL,
-// then the public RPC of VITE_CHAIN).
+// then the public RPC of VITE_CHAIN), WAGES_ADDRESS (or VITE_WAGES_ADDRESS) for smith wages.
 
 import { JsonRpcProvider, Contract, Interface, isAddress } from "ethers";
 import { rateFrom } from "../../src/game/rules.js";
@@ -25,6 +25,10 @@ const FORGE = new Interface([
     `function getListings(uint256 offset, uint256 limit) view returns (uint256[], ${SWORD}[], address[])`,
 ]);
 
+const WAGES = new Interface([
+    "function isBillPaid(bytes32 billId_) view returns (bool)",
+]);
+
 const MULTI = new Interface([
     "function aggregate3((address target, bool allowFailure, bytes callData)[] calls) view returns ((bool success, bytes returnData)[])",
     "function getCurrentBlockTimestamp() view returns (uint256 timestamp)",
@@ -36,7 +40,7 @@ const swordOf = (r) => ({
     syncedAt: r.syncedAt, listPrice: r.listPrice, mintPrice: r.mintPrice, seed: r.seed,
 });
 
-function ethersChain({ rpc, forgeAddress, runner } = {}) {
+function ethersChain({ rpc, forgeAddress, wagesAddress = "", runner } = {}) {
     const provider = runner ?? new JsonRpcProvider(rpc, undefined, { batchMaxCount: 1 });
     const multicall = new Contract(MULTICALL3, MULTI, provider);
     let chainId = null;
@@ -58,6 +62,14 @@ function ethersChain({ rpc, forgeAddress, runner } = {}) {
 
     return {
         forgeAddress,
+        wagesAddress,
+
+        /** Whether a wages bill the server signed has been paid into the Wages contract */
+        async isBillPaid(billId) {
+            if (!wagesAddress) return false;
+            const data = await provider.call({ to: wagesAddress, data: WAGES.encodeFunctionData("isBillPaid", [ billId ]) });
+            return Boolean(WAGES.decodeFunctionResult("isBillPaid", data)[0]);
+        },
 
         async chainId() {
             if (chainId === null) chainId = (await provider.getNetwork?.())?.chainId ?? 0n;
@@ -123,8 +135,9 @@ const getChain = () => {
     const forgeAddress = envOf("FORGE_ADDRESS", "VITE_FORGE_ADDRESS");
     const rpc = envOf("RPC_URL", "VITE_RPC_URL") || PUBLIC_RPC[envOf("VITE_CHAIN") || "bsc"];
     if (!isAddress(forgeAddress || "") || !rpc) throw new Error("Chain is not configured (FORGE_ADDRESS, RPC_URL)");
-    current = ethersChain({ rpc, forgeAddress });
+    const wagesAddress = envOf("WAGES_ADDRESS", "VITE_WAGES_ADDRESS");
+    current = ethersChain({ rpc, forgeAddress, wagesAddress: isAddress(wagesAddress || "") ? wagesAddress : "" });
     return current;
 };
 
-export { ethersChain, getChain, setChain, MULTICALL3, FORGE, MULTI };
+export { ethersChain, getChain, setChain, MULTICALL3, FORGE, MULTI, WAGES };

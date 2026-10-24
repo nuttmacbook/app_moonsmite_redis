@@ -63,6 +63,26 @@ const MINIGAME = {
 };
 
 const LEVEL_IDS = [ "easy", "normal", "hard", "insane" ];
+
+/* =====================================================================
+ * HIRE SETTINGS — smiths striking other players' weapons for wages.
+ *
+ * A smith passes the licensing exam (every minigame at every level), then takes a job from the
+ * board. The owner sets the license score a job needs and the smith's share of the value each
+ * strike adds. Wages are paid per weapon into the Wages contract; smiths claim them there.
+ * ===================================================================== */
+const HIRE = {
+    maxShare:        80,            // highest share of the value added an owner may offer (%)
+    examCooldownSec: 24 * 60 * 60,  // one exam per wallet per this many seconds
+    examTtlSec:      30 * 60,       // an exam must be finished within this time
+    lockIdleSec:     30 * 60,       // a job frees itself after this long without a strike
+    owedGraceSec:    7 * 24 * 60 * 60, // owing wages older than this blocks opening new jobs
+    logSize:         20,            // strikes kept in a weapon's hire log
+    workScoreOf:     20,            // the work score averages this many recent strikes
+    billTtlSec:      60 * 60,       // a wages bill must go on-chain within this time
+    maxBillSmiths:   20,            // smiths paid by one bill
+    maxBlocked:      100,           // smiths one owner can block
+};
 /* ===================================================================== */
 
 const FURNACE_CAP = 24 * 60 * 60;       // one charge counts up to 24h
@@ -361,7 +381,7 @@ function statsForChain(sword, chain, now, rate = DEFAULT_RATE) {
 }
 
 export {
-    MINIGAME, LEVEL_IDS, FURNACE_CAP, CLOCK_MARGIN, DEFAULT_FURNACES, DEFAULT_RATE,
+    MINIGAME, LEVEL_IDS, HIRE, FURNACE_CAP, CLOCK_MARGIN, DEFAULT_FURNACES, DEFAULT_RATE,
     rateFrom, rateOf, strikeIncrease, maxValue, earnedOf, pointsOf,
     baseOf, fromChain, isCurrent, isSignedSave, resolveSword, coolDown, unsavedOf, viewOf, settle, viewState,
     hash, makeRoll, rollFor, practiceRoll, bucketOf, emptyStats, applyStrike, statsForChain,

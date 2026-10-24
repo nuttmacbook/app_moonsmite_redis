@@ -12,12 +12,20 @@
 //   strike.start   { tokenId }                      → the roll to play and a sealed ticket (sessionId)
 //   strike.finish  { tokenId, sessionId, log }      → score replayed from the input log
 //   import         { records, stats }               once: progress the phone kept before this server existed
+//   hire.open      { tokenId, minScore, share }      put a weapon on the smiths' jobs board
+//   hire.close     { tokenId }                      take it off (after the smith on it, if any)
+//   hire.block     { smith, isBlocked }             stop a smith from taking this wallet's jobs
+//   wages.bill     { tokenId }                      a signed bill to pay on the Wages contract
+//   wages.confirm  { token }                        counts a bill once it is paid on-chain
 
 import { isAddress } from "ethers";
 import { handle, readBody, queryOf, refuse, send } from "./_lib/http.js";
 import { requireOwner } from "./_lib/auth.js";
 import { assertOpen } from "./_lib/maintenance.js";
-import { readRecords, startFurnace, stopFurnace, startStrike, finishStrike, importRecords } from "./_lib/game.js";
+import {
+    readRecords, startFurnace, stopFurnace, startStrike, finishStrike, importRecords,
+    openHire, closeHire, blockSmith, billWages, confirmWages,
+} from "./_lib/game.js";
 
 const ACTIONS = {
     "furnace.start": (owner, b) => startFurnace(owner, b.tokenId),
@@ -25,6 +33,11 @@ const ACTIONS = {
     "strike.start":  (owner, b) => startStrike(owner, b.tokenId),
     "strike.finish": (owner, b) => finishStrike(owner, b.tokenId, b.sessionId, b.log),
     "import":        (owner, b) => importRecords(owner, b.records, b.stats),
+    "hire.open":     (owner, b) => openHire(owner, b.tokenId, b.minScore, b.share),
+    "hire.close":    (owner, b) => closeHire(owner, b.tokenId),
+    "hire.block":    (owner, b) => blockSmith(owner, b.smith, b.isBlocked !== false),
+    "wages.bill":    async (owner, b) => ({ result: await billWages(owner, b.tokenId) }),
+    "wages.confirm": async (owner, b) => ({ result: await confirmWages(owner, b.token) }),
 };
 
 export default handle(async (req, res) => {

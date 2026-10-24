@@ -126,12 +126,16 @@ async function verifyPage(kind, cursor) {
     const ownerFor = (x) => (isSwords ? lower(x.value.owner) : lower(ownerOf(x.key)));
     const owners = [ ...new Set(items.map(ownerFor)) ];
     const docs = await docsOf(owners);
-    const mismatched = items.filter((x) => {
+    // A document the new version already wrote (doc.live) was built from these same old keys on
+    // that wallet's first action and has moved on since: it is the newer copy, not a mismatch
+    const isLive = (x) => Boolean(docs[ownerFor(x)]?.doc?.live);
+    const copied = items.filter((x) => !isLive(x));
+    const mismatched = copied.filter((x) => {
         const doc = docs[ownerFor(x)]?.doc;
         const copy = isSwords ? doc?.swords?.[tokenIdOf(x.key)] : doc?.stats;
         return JSON.stringify(copy ?? null) !== JSON.stringify(x.value);
     }).map((x) => x.key);
-    return { cursor: page.cursor, checked: items.length, mismatched };
+    return { cursor: page.cursor, checked: copied.length, live: items.length - copied.length, mismatched };
 }
 
 /* ------------------------------------------------------------ backup */

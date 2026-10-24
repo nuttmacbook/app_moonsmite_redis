@@ -36,19 +36,22 @@ let lastStats = emptyStats();
 async function loadState(account, ids, chainSwords, slots, furnaceRate, now) {
     const rate = furnaceRate ? rateFrom(furnaceRate.pointsPerHour, furnaceRate.maxPoints) : DEFAULT_RATE;
     let records = {};
+    let hire = null;
     let offline = "";
     if (account) {
         // The chain data still shows if the game server is down; only unsaved progress is missing
         try {
             const out = await json(`/api/game?owner=${lower(account)}&ids=${ids.join(",")}`);
             records = out?.records ?? {};
+            hire = out?.hire ?? null;
             lastStats = out?.stats ?? emptyStats();
         } catch (error) {
             offline = error?.message ?? "The game server is not available right now.";
         }
     }
-    if (offline) return { ...viewState(settle(account, ids, chainSwords, records, slots, now, rate), now, rate), offline };
-    return viewState(settle(account, ids, chainSwords, records, slots, now, rate), now, rate);
+    // hire: this wallet's weapons out for hire and the wages they owe (see game/hire.js)
+    const view = { ...viewState(settle(account, ids, chainSwords, records, slots, now, rate), now, rate), hire };
+    return offline ? { ...view, offline } : view;
 }
 
 /** The profile's strike history, as the server last sent it */

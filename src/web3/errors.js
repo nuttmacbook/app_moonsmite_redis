@@ -1,5 +1,6 @@
 import { Interface } from "ethers";
 import { Forge } from "./contracts/contract_forge";
+import { Wages } from "./contracts/contract_wages";
 
 // The game contract reverts with short custom errors (they keep it small). This turns them back
 // into messages players can act on. Coin and wallet errors pass through as they come.
@@ -46,9 +47,19 @@ const MESSAGES = {
     NotAllowed:              "This wallet is not allowed to do that.",
     WrongOwner:              "This weapon changed hands. Refresh the page.",
     NoToken:                 "That weapon does not exist.",
+    // smith wages (Wages contract)
+    FeeRequired:             "The network fee was missing. Please try again.",
+    BillExpired:             "That bill ran out. Tap Pay again for a new one.",
+    BillAlreadyPaid:         "These wages are already paid. Refresh the page.",
+    BillSize:                "That bill could not be read. Tap Pay again.",
+    BillIsZero:              "Nothing is owed on this weapon.",
+    WagesLocked:             "Wages held for smiths cannot be moved.",
+    AlreadyInitialized:      "This contract is already set up.",
 };
 
-const iface = new Interface((Forge.abi ?? []).filter((x) => x?.type === "error"));
+// Errors of both contracts; the same name in both is listed once
+const errorFragments = [ ...(Forge.abi ?? []), ...(Wages.abi ?? []) ].filter((x) => x?.type === "error");
+const iface = new Interface(errorFragments.filter((x, i) => errorFragments.findIndex((y) => y.name === x.name) === i));
 
 /** Finds the revert data wherever the wallet or RPC put it */
 const revertData = (error) => {

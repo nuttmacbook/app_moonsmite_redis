@@ -16,9 +16,10 @@ import { cmd } from "./redis.js";
 import { refuse } from "./http.js";
 import { readDoc, writeDoc, legacyDoc } from "./docs.js";
 import { seal, unseal } from "./seal.js";
+import { requireHire, isLockActive, owedTotal, oldestOwed, hireView, updateIndex, makeBill, confirmBill } from "./hire.js";
 import {
     settle, viewState, coolDown, pointsOf, rollFor, applyStrike, emptyStats, statsForChain,
-    resolveSword, baseOf, maxValue, FURNACE_CAP,
+    resolveSword, baseOf, maxValue, FURNACE_CAP, HIRE,
 } from "../../src/game/rules.js";
 import { scoreLog, COUNTDOWN_MS } from "../../src/game/scoring.js";
 
@@ -26,6 +27,7 @@ const MAX_IDS = 500;
 const STRIKE_TTL_MS = 15 * 60 * 1000;     // a strike left open longer than this has to start again
 const CLOCK_SLACK_MS = 1500;              // network and frame slack on the play-time check
 const WRITE_TRIES = 4;
+const BILL_SLACK_SEC = 120;              // a bill stays the live one this long past its deadline
 
 const lower = (a) => String(a ?? "").toLowerCase();
 const nowSec = () => Math.floor(Date.now() / 1000);
@@ -60,7 +62,7 @@ async function readRecords(owner, ids) {
         // Only this wallet's records; a strike from the previous version is not shown
         if (r && lower(r.owner) === lower(owner)) out[id] = { ...r, strike: null, signed: null };
     });
-    return { records: out, stats: doc?.stats ?? emptyStats(), now: nowSec() };
+    return { records: out, stats: doc?.stats ?? emptyStats(), hire: hireView(doc), now: nowSec() };
 }
 
 /* ---------------------------------------------------------- mutate */
@@ -85,20 +87,52 @@ async function mutate(owner, fn, { readOnly = false } = {}) {
             owner: lower(owner), now, rate: snap.rate, settled, chainById,
             stats: structuredClone(doc.stats ?? emptyStats()), isStatsChanged: false,
             imported: { ...(doc.imported ?? {}) }, isImportChanged: false,
+            rent: structuredClone(doc.rent ?? {}), blocked: [ ...(doc.blocked ?? []) ], owed: doc.owed ?? {},
+            isHireChanged: false, indexOps: [],
         };
+        settleHire(ctx);
 
         const result = await fn(ctx);
-        const out = { result, game: viewState(settled, now, snap.rate), stats: ctx.stats };
-        if (readOnly || (!settled.changed.size && !ctx.isStatsChanged && !ctx.isImportChanged)) return out;
+        const view = { ...doc, rent: ctx.rent, blocked: ctx.blocked };
+        const out = { result, game: viewState(settled, now, snap.rate), stats: ctx.stats, hire: hireView(view, now) };
+        if (readOnly || (!settled.changed.size && !ctx.isStatsChanged && !ctx.isImportChanged && !ctx.isHireChanged)) return out;
 
-        // Swords that left the wallet are dropped; their next owner starts from the chain
+        // Swords that left the wallet are dropped; their next owner starts from the chain.
+        // Hire data (wages owed, the log) is kept per wallet, so a sale never wipes a debt.
         const swords = Object.fromEntries(snap.ids.map((id) => [ id, settled.swords[id] ]));
         const imported = Object.fromEntries(Object.entries(ctx.imported).filter(([ id, at ]) => String(chainById[id]?.syncedAt ?? "") === String(at)));
-        if (await writeDoc(owner, rev, { swords, stats: ctx.stats, imported, live: true })) return out;
+        if (await writeDoc(owner, rev, { ...doc, swords, stats: ctx.stats, imported, rent: ctx.rent, blocked: ctx.blocked, live: true })) {
+            await updateIndex(ctx.indexOps);
+            return out;
+        }
         await sleep(40 + Math.random() * 120 * attempt);
     }
     return busy();
 }
+
+/**
+ * Hires that can no longer run end here: the weapon left the wallet or was listed, or the owner
+ * asked to close it and no smith is on it any more.
+ */
+function settleHire(ctx) {
+    Object.entries(ctx.rent).forEach(([ id, r ]) => {
+        const isGone = !ctx.settled.swords[id] || isListed(ctx.chainById[id]);
+        if (isGone || (r.closing && !isLockActive(r.lock, ctx.now))) {
+            delete ctx.rent[id];
+            ctx.indexOps.push([ "del", id ]);
+            ctx.isHireChanged = true;
+        }
+    });
+}
+
+/** Furnace, strike and save wait while a weapon is out for hire or owes wages */
+const assertNotHired = (ctx, id, doing) => {
+    if (ctx.rent[id]) refuse(`This weapon is out for hire. Close the hire to ${doing}.`);
+};
+
+const assertNoWages = (owed, id, doing) => {
+    if (owedTotal(owed?.[id]) > 0n) refuse(`Pay the smiths' wages on NFT #${id} to ${doing}.`);
+};
 
 const own = (ctx, tokenId) => {
     const id = String(tokenId);
@@ -117,6 +151,8 @@ const startFurnace = (owner, tokenId) => mutate(owner, (ctx) => {
     const { id, sword, chain } = own(ctx, tokenId);
     if (isListed(chain)) refuse("Cancel the listing before heating this weapon.");
     if (sword.furnace) refuse("This weapon is already in a furnace.");
+    assertNotHired(ctx, id, "heat it");
+    assertNoWages(ctx.owed, id, "heat it");
     const items = ctx.settled.furnaces.items;
     const slot = items.findIndex((item) => !item);
     if (slot < 0) refuse(`All ${items.length} furnaces are busy. Take a weapon out first.`);
@@ -144,6 +180,7 @@ const strikeChecks = (ctx, sword, chain) => {
     if (isListed(chain)) refuse("Cancel the listing before striking.");
     if (sword.furnace) refuse("Take the weapon out of the furnace before striking.");
     if (pointsOf(sword, ctx.rate) < 1) refuse("No strike points left. Heat the weapon in a furnace first.");
+    assertNotHired(ctx, String(sword.tokenId), "strike it yourself");
 };
 
 /**
@@ -325,6 +362,8 @@ async function statsToSign(owner, tokenIds) {
 
         const out = [];
         ids.forEach((id, i) => {
+            if (doc.rent?.[id]) refuse(`NFT #${id} is out for hire. Close the hire before saving it.`);
+            assertNoWages(doc.owed, id, "save, sell or send it");
             const { sword: chainSword, nonce } = swords[i];
             const { sword } = resolveSword(id, owner, chainSword, doc.swords[id]);
             let stats;
@@ -366,4 +405,100 @@ function assertSignable(id, s, next, now, rate) {
     }
 }
 
-export { readRecords, startFurnace, stopFurnace, startStrike, finishStrike, importRecords, statsToSign, formulaCap };
+/* ------------------------------------------------------------- hire */
+
+const intIn = (value, min, max) => {
+    const n = Number(value);
+    return Number.isInteger(n) && n >= min && n <= max ? n : null;
+};
+
+/**
+ * Puts a weapon on the jobs board. While it is there the owner cannot heat, strike, save or sell
+ * it; smiths strike it for `share` percent of the value each strike adds.
+ */
+const openHire = (owner, tokenId, minScore, share) => mutate(owner, (ctx) => {
+    requireHire();
+    const { id, sword, chain } = own(ctx, tokenId);
+    const score = intIn(minScore, 0, 100);
+    const cut = intIn(share, 1, HIRE.maxShare);
+    if (score === null) refuse("Set the license score between 0 and 100.");
+    if (cut === null) refuse(`Set the smith's share between 1 and ${HIRE.maxShare}%.`);
+    if (isListed(chain)) refuse("Cancel the listing before hiring out this weapon.");
+    if (sword.furnace) refuse("Take the weapon out of the furnace first.");
+    if (ctx.rent[id]) refuse("This weapon is already out for hire.");
+    if (pointsOf(sword, ctx.rate) < 1) refuse("This weapon has no strike points. Heat it first.");
+    assertNoWages(ctx.owed, id, "hire it out again");
+    const oldest = oldestOwed(ctx.owed);
+    if (oldest && ctx.now - oldest > HIRE.owedGraceSec) refuse("You owe smiths wages from more than a week ago. Pay them before opening new jobs.");
+
+    ctx.rent[id] = { minScore: score, share: cut, openedAt: ctx.now, seed: String(chain?.seed ?? "0"), lock: null, closing: false };
+    ctx.indexOps.push([ "set", id, ctx.owner ]);
+    ctx.isHireChanged = true;
+    return { tokenId: id, minScore: score, share: cut };
+});
+
+/** Takes a weapon off the board now, or as soon as the smith on it is done */
+const closeHire = (owner, tokenId) => mutate(owner, (ctx) => {
+    const id = String(tokenId);
+    const rent = ctx.rent[id];
+    if (!rent) refuse("This weapon is not out for hire.");
+    ctx.isHireChanged = true;
+    if (isLockActive(rent.lock, ctx.now)) {
+        ctx.rent[id] = { ...rent, closing: true };
+        return { tokenId: id, isClosing: true };
+    }
+    delete ctx.rent[id];
+    ctx.indexOps.push([ "del", id ]);
+    return { tokenId: id, isClosing: false };
+});
+
+/** Stops a smith from taking this owner's jobs; a job they hold now ends */
+const blockSmith = (owner, smith, isBlocked = true) => mutate(owner, (ctx) => {
+    const who = lower(smith);
+    if (!/^0x[0-9a-f]{40}$/.test(who)) refuse("That wallet address is not valid.");
+    ctx.blocked = ctx.blocked.filter((x) => x !== who);
+    if (isBlocked) {
+        if (ctx.blocked.length >= HIRE.maxBlocked) refuse(`You can block up to ${HIRE.maxBlocked} smiths.`);
+        ctx.blocked.push(who);
+        Object.entries(ctx.rent).forEach(([ id, r ]) => {
+            if (lower(r.lock?.smith) === who) ctx.rent[id] = { ...r, lock: null };
+        });
+    }
+    ctx.isHireChanged = true;
+    return { smith: who, isBlocked };
+});
+
+/**
+ * The bill for the wages one weapon owes. A weapon has at most one live bill: asking again gives
+ * the same bill until it is paid or runs out, so two taps or two phones can never pay the same
+ * wages twice. A bill that was paid but never counted (the phone lost its connection) is counted
+ * here instead of making a new one.
+ * @returns {Promise<object>} the bill, or { isPaid: true } when the wages were already paid
+ */
+async function billWages(owner, tokenId) {
+    requireHire();
+    const id = String(tokenId);
+    for (let attempt = 1; attempt <= WRITE_TRIES; attempt++) {
+        const { rev, doc } = await readDoc(owner);
+        const open = doc?.bills?.[id];
+        if (open) {
+            if (await getChain().isBillPaid(open.billId)) {
+                await confirmBill(owner, open.token);
+                return { isPaid: true, tokenId: id };
+            }
+            // The contract takes a bill until its deadline: it stays the weapon's only bill until
+            // then (plus slack for block time), so two live bills never exist at once
+            if (nowSec() <= Number(open.deadline) + BILL_SLACK_SEC) return open;
+        }
+        const bill = await makeBill(owner, doc, id);
+        if (await writeDoc(owner, rev, { ...doc, bills: { ...(doc?.bills ?? {}), [id]: bill }, live: true })) return bill;
+        await sleep(40 + Math.random() * 120 * attempt);
+    }
+    return busy();
+}
+
+/** Counts a bill the owner paid on the Wages contract */
+const confirmWages = (owner, token) => confirmBill(owner, token);
+
+export { readRecords, startFurnace, stopFurnace, startStrike, finishStrike, importRecords, statsToSign, formulaCap,
+    openHire, closeHire, blockSmith, billWages, confirmWages };

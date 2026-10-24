@@ -8,6 +8,7 @@ const ICONS = {
     armory:  `<path d="M5 19 16 8m2-4 2 2-3 3-2-2 3-3ZM4 16l4 4" stroke-linecap="round" stroke-linejoin="round"/>`,
     moon:    `<path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z" stroke-linejoin="round"/>`,
     profile: `<circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6" stroke-linecap="round"/>`,
+    smith:   `<path d="M14 4h6v5h-6zM14 6.5H9a3 3 0 0 0-3 3M15.5 9 6 18.5a1.4 1.4 0 0 0 2 2L17.5 11" stroke-linecap="round" stroke-linejoin="round"/>`,
     soundOn: `<path d="M4 9v6h4l5 4V5L8 9H4Z" stroke-linejoin="round"/><path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12" stroke-linecap="round"/>`,
     soundOff: `<path d="M4 9v6h4l5 4V5L8 9H4Z" stroke-linejoin="round"/><path d="m17 9 5 6m0-6-5 6" stroke-linecap="round"/>`,
 };
@@ -16,8 +17,12 @@ const TABS = [
     { id: "mint",    label: "Mint" },
     { id: "market",  label: "Market" },
     { id: "armory",  label: "Armory" },
+    { id: "smith",   label: "Smith", isHire: true },
     { id: "profile", label: "Profile" },
 ];
+
+/** The Smith tab shows only once smith jobs are open (the Wages contract is set) */
+const tabsFor = (isHireOn) => TABS.filter((t) => !t.isHire || isHireOn);
 
 /** Wallet popup: address, balance, profile, and Disconnect — works before the first mint too */
 if (typeof window !== "undefined") {
@@ -109,7 +114,7 @@ const header = (data) => {
 
             <!-- Tabs: desktop only, phones use the bottom bar -->
             <nav class="hidden gap-1 sm:flex" role="tablist" aria-label="Sections">
-                ${TABS.map((t) => /*html*/`
+                ${tabsFor(data?.isHireOn).map((t) => /*html*/`
                     <button type="button" role="tab" data-tab-button="${t.id}" aria-selected="${t.id === tab}" onclick="switchTab('${t.id}')"
                         class="cut px-3 py-1.5 font-display text-[12px] font-semibold uppercase tracking-wider text-slate-300 transition hover:text-white aria-selected:bg-amber-300/15 aria-selected:text-amber-200 ${FOCUS}">${t.label}</button>
                 `).join("")}
@@ -139,10 +144,11 @@ const header = (data) => {
 /** Phone navigation, thumb reachable, clears the home indicator */
 const bottomNav = (data) => {
     const tab = data?.tab ?? "mint";
+    const tabs = tabsFor(data?.isHireOn);
     return /*html*/`
     <nav class="fixed inset-x-0 bottom-0 z-30 border-t border-amber-200/20 bg-indigo-950/90 pb-[env(safe-area-inset-bottom,0px)] shadow-[0_-12px_40px_-20px_rgba(252,211,77,0.35)] backdrop-blur sm:hidden" role="tablist" aria-label="Sections">
-        <div class="grid grid-cols-4">
-            ${TABS.map((t) => /*html*/`
+        <div class="grid ${tabs.length === 5 ? "grid-cols-5" : "grid-cols-4"}">
+            ${tabs.map((t) => /*html*/`
                 <button type="button" role="tab" data-tab-button="${t.id}" data-tab-style="bar" aria-selected="${t.id === tab}" onclick="switchTab('${t.id}')"
                     class="flex flex-col items-center gap-0.5 py-2 font-display text-[10px] font-semibold uppercase tracking-wider text-slate-400 aria-selected:text-amber-200 aria-selected:drop-shadow-[0_0_8px_rgba(252,211,77,0.7)] ${FOCUS}">
                     ${icon(t.id)}
