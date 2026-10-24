@@ -36,11 +36,18 @@ let lastStats = emptyStats();
 async function loadState(account, ids, chainSwords, slots, furnaceRate, now) {
     const rate = furnaceRate ? rateFrom(furnaceRate.pointsPerHour, furnaceRate.maxPoints) : DEFAULT_RATE;
     let records = {};
+    let offline = "";
     if (account) {
-        const out = await json(`/api/game?owner=${lower(account)}&ids=${ids.join(",")}`);
-        records = out?.records ?? {};
-        lastStats = out?.stats ?? emptyStats();
+        // The chain data still shows if the game server is down; only unsaved progress is missing
+        try {
+            const out = await json(`/api/game?owner=${lower(account)}&ids=${ids.join(",")}`);
+            records = out?.records ?? {};
+            lastStats = out?.stats ?? emptyStats();
+        } catch (error) {
+            offline = error?.message ?? "The game server is not available right now.";
+        }
     }
+    if (offline) return { ...viewState(settle(account, ids, chainSwords, records, slots, now, rate), now, rate), offline };
     return viewState(settle(account, ids, chainSwords, records, slots, now, rate), now, rate);
 }
 

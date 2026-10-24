@@ -25,6 +25,15 @@ const keys = {
     session: (token) => `ms:auth:session:${token}`,
     market: () => `ms:${scopeOf()}:market`,
     marketLock: () => `ms:${scopeOf()}:market:lock`,
+    // One document per wallet: every sword record and the strike stats (see docs.js)
+    owner: (owner) => `ms:${scopeOf()}:owner:${lower(owner)}`,
+    maintenance: () => `ms:${scopeOf()}:maintenance`,
+    // Patterns for the admin tools (SCAN MATCH)
+    swordPattern: () => `ms:${scopeOf()}:sword:*`,
+    statsPattern: () => `ms:${scopeOf()}:stats:*`,
+    ownerPattern: () => `ms:${scopeOf()}:owner:*`,
+    lockPattern: () => `ms:${scopeOf()}:lock:*`,
+    allPattern: () => `ms:${scopeOf()}:*`,
     limit: (name, who) => `ms:limit:${name}:${lower(who)}:${Math.floor(Date.now() / 60000)}`,
 };
 

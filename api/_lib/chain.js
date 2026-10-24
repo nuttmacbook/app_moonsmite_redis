@@ -118,8 +118,10 @@ const setChain = (adapter) => {
 
 const getChain = () => {
     if (current) return current;
-    const forgeAddress = process.env.FORGE_ADDRESS || process.env.VITE_FORGE_ADDRESS;
-    const rpc = process.env.RPC_URL || process.env.VITE_RPC_URL || PUBLIC_RPC[process.env.VITE_CHAIN || "bsc"];
+    // Skips empty values and leftover placeholders like "https://..."
+    const envOf = (...names) => names.map((n) => String(process.env[n] ?? "").trim()).find((v) => v && !v.includes("...")) ?? "";
+    const forgeAddress = envOf("FORGE_ADDRESS", "VITE_FORGE_ADDRESS");
+    const rpc = envOf("RPC_URL", "VITE_RPC_URL") || PUBLIC_RPC[envOf("VITE_CHAIN") || "bsc"];
     if (!isAddress(forgeAddress || "") || !rpc) throw new Error("Chain is not configured (FORGE_ADDRESS, RPC_URL)");
     current = ethersChain({ rpc, forgeAddress });
     return current;

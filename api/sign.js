@@ -19,6 +19,7 @@ import { requireOwner } from "./_lib/auth.js";
 import { statsToSign } from "./_lib/game.js";
 import { getChain } from "./_lib/chain.js";
 import { underLimit } from "./_lib/redis.js";
+import { assertOpen } from "./_lib/maintenance.js";
 import { keys } from "./_lib/keys.js";
 
 const MAX_ITEMS = 30;
@@ -41,6 +42,7 @@ export default handle(async (req, res) => {
     if (!isAddress(owner)) refuse("Wallet address is not valid");
     if (items.length < 1 || items.length > MAX_ITEMS) refuse(`Sign 1 to ${MAX_ITEMS} weapons at a time`);
 
+    await assertOpen();
     await requireOwner(req, owner);
     if (!(await underLimit(keys.limit("sign", owner), 20, 60))) refuse("Too many saves at once. Wait a minute and try again.", 429);
 

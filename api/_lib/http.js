@@ -43,7 +43,11 @@ const handle = (fn) => async (req, res) => {
             return send(res, error.status ?? 400, { error: error.message });
         }
         console.error(error);
-        return send(res, 500, { error: "The game server is not available right now. Please try again." });
+        // Outside production (vercel dev, preview) say what broke, so setup mistakes are easy to find
+        const isProduction = process.env.VERCEL_ENV === "production";
+        const cause = error?.cause?.hostname ? `: ${error.cause.code} ${error.cause.hostname}` : "";
+        const detail = isProduction ? "" : ` (${error?.message ?? error}${cause})`;
+        return send(res, 500, { error: `The game server is not available right now. Please try again.${detail}` });
     }
 };
 

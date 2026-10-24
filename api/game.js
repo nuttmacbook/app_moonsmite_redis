@@ -15,6 +15,7 @@ import { handle, readBody, queryOf, refuse, send, clientIp } from "./_lib/http.j
 import { requireOwner } from "./_lib/auth.js";
 import { underLimit } from "./_lib/redis.js";
 import { keys } from "./_lib/keys.js";
+import { assertOpen } from "./_lib/maintenance.js";
 import { readRecords, startFurnace, stopFurnace, startStrike, finishStrike, importRecords } from "./_lib/game.js";
 
 const ACTIONS = {
@@ -41,6 +42,7 @@ export default handle(async (req, res) => {
     if (!isAddress(owner)) refuse("Wallet address is not valid");
     const run = ACTIONS[String(body?.action)];
     if (!run) refuse("Unknown action");
+    await assertOpen();
 
     await requireOwner(req, owner);
     if (!(await underLimit(keys.limit("game", owner), 120, 60))) refuse("Too many actions at once. Wait a minute and try again.", 429);

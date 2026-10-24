@@ -11,11 +11,16 @@ const setRedisFetch = (fn, cfg = { url: "http://redis.test", token: "test" }) =>
     config = cfg;
 };
 
+/** First env value that is set and is not a leftover placeholder like "https://..." */
+const envOf = (...names) => names.map((n) => String(process.env[n] ?? "").trim()).find((v) => v && !v.includes("...")) ?? "";
+
 const conf = () => {
     if (config) return config;
-    const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
-    const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
+    const url = envOf("UPSTASH_REDIS_REST_URL", "KV_REST_API_URL");
+    const token = envOf("UPSTASH_REDIS_REST_TOKEN", "KV_REST_API_TOKEN");
     if (!url || !token) throw new Error("Redis is not configured (UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN)");
+    // KV_URL / REDIS_URL (redis://…) are for TCP clients; this file talks to the REST API
+    if (!/^https:\/\//.test(url)) throw new Error("UPSTASH_REDIS_REST_URL must be the https:// REST URL from Upstash, not a redis:// URL");
     config = { url: url.replace(/\/$/, ""), token };
     return config;
 };
@@ -99,4 +104,10 @@ async function underLimit(key, max, windowSec) {
     return Number(count) <= max;
 }
 
-export { setRedisFetch, cmd, pipeline, getJSON, mgetJSON, setJSON, msetJSON, withLock, underLimit };
+/** One page of keys matching a pattern: { cursor, keys }; cursor "0" means done */
+async function scan(cursor, match, count = 200) {
+    const [ next, found ] = await cmd("SCAN", cursor || "0", "MATCH", match, "COUNT", count);
+    return { cursor: String(next), keys: found ?? [] };
+}
+
+export { setRedisFetch, cmd, pipeline, getJSON, mgetJSON, setJSON, msetJSON, withLock, underLimit, scan };
