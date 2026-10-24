@@ -17,17 +17,20 @@ const scopeOf = () => {
 
 const keys = {
     scope: scopeOf,
+    // Written by the previous version only. Read by the admin sync, by the one-time fallback for
+    // a wallet without a document, and for sign-in tokens issued before this version (24h).
     sword: (tokenId) => `ms:${scopeOf()}:sword:${tokenId}`,
     stats: (owner) => `ms:${scopeOf()}:stats:${lower(owner)}`,
     imported: (tokenId, syncedAt) => `ms:${scopeOf()}:imported:${tokenId}:${syncedAt}`,
     ownerLock: (owner) => `ms:${scopeOf()}:lock:${lower(owner)}`,
-    nonce: (owner) => `ms:auth:nonce:${lower(owner)}`,
     session: (token) => `ms:auth:session:${token}`,
     market: () => `ms:${scopeOf()}:market`,
     marketLock: () => `ms:${scopeOf()}:market:lock`,
     // One document per wallet: every sword record and the strike stats (see docs.js)
     owner: (owner) => `ms:${scopeOf()}:owner:${lower(owner)}`,
-    maintenance: () => `ms:${scopeOf()}:maintenance`,
+    // This version's own pause flag: the previous version's flag (set while the admin copies its
+    // data) does not apply here, so the game opens as soon as this version is live
+    maintenance: () => `ms:${scopeOf()}:maintenance:v2`,
     // Patterns for the admin tools (SCAN MATCH)
     swordPattern: () => `ms:${scopeOf()}:sword:*`,
     statsPattern: () => `ms:${scopeOf()}:stats:*`,

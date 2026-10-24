@@ -4,11 +4,18 @@
 // furnace, the strike and the numbers that go on-chain all live here, in Redis, and change only
 // through these functions. Every phone of the same wallet reads the same records, and a strike
 // score is accepted only as the replay of what the player did.
+//
+// Storage: one document per wallet (docs.js) with every sword record and the strike stats.
+// A read is 1 command; a change is 2 (read, then a compare-and-set write that only lands if no
+// other phone wrote in between, else it runs again on the fresh copy). A strike in progress is
+// not stored at all: the phone holds a sealed ticket (seal.js) and brings it back to finish.
 
 import { getChain } from "./chain.js";
 import { keys } from "./keys.js";
-import { cmd, mgetJSON, getJSON, msetJSON, setJSON, withLock } from "./redis.js";
+import { cmd } from "./redis.js";
 import { refuse } from "./http.js";
+import { readDoc, writeDoc, legacyDoc } from "./docs.js";
+import { seal, unseal } from "./seal.js";
 import {
     settle, viewState, coolDown, pointsOf, rollFor, applyStrike, emptyStats, statsForChain,
     resolveSword, baseOf, maxValue, FURNACE_CAP,
@@ -18,11 +25,25 @@ import { scoreLog, COUNTDOWN_MS } from "../../src/game/scoring.js";
 const MAX_IDS = 500;
 const STRIKE_TTL_MS = 15 * 60 * 1000;     // a strike left open longer than this has to start again
 const CLOCK_SLACK_MS = 1500;              // network and frame slack on the play-time check
-const IMPORT_TTL_SEC = 90 * 24 * 60 * 60;
+const WRITE_TRIES = 4;
 
 const lower = (a) => String(a ?? "").toLowerCase();
 const nowSec = () => Math.floor(Date.now() / 1000);
 const salt = () => process.env.STRIKE_SALT || process.env.SIGNER_KEY || "dev-salt";
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const busy = () => refuse("Another device is busy with this wallet. Try again in a moment.", 409);
+
+/**
+ * The wallet's document. A wallet the admin sync did not reach (no document yet) is read from the
+ * previous version's per-sword keys once; the first write then stores it as a document.
+ * @param {string[]} ids  every token id the wallet owns, so nothing old is left behind
+ */
+async function loadDoc(owner, ids) {
+    const { rev, doc } = await readDoc(owner);
+    if (doc) return { rev, doc };
+    return { rev: 0, doc: await legacyDoc(owner, ids) };
+}
 
 /* ------------------------------------------------------------ read */
 
@@ -32,41 +53,51 @@ const salt = () => process.env.STRIKE_SALT || process.env.SIGNER_KEY || "dev-sal
  */
 async function readRecords(owner, ids) {
     const list = [ ...new Set((ids ?? []).map(String).filter((id) => /^\d+$/.test(id))) ].slice(0, MAX_IDS);
-    const [ records, stats ] = await Promise.all([ mgetJSON(list.map(keys.sword)), getJSON(keys.stats(owner)) ]);
+    const { doc } = await readDoc(owner);
     const out = {};
-    list.forEach((id, i) => {
-        const r = records[i];
-        // Only this wallet's records; the strike salt never leaves the server
-        if (r && lower(r.owner) === lower(owner)) out[id] = { ...r, strike: r.strike ? { id: r.strike.id, strikesAtStart: r.strike.strikesAtStart } : null, signed: null };
+    list.forEach((id) => {
+        const r = doc?.swords?.[id];
+        // Only this wallet's records; a strike from the previous version is not shown
+        if (r && lower(r.owner) === lower(owner)) out[id] = { ...r, strike: null, signed: null };
     });
-    return { records: out, stats: stats ?? emptyStats(), now: nowSec() };
+    return { records: out, stats: doc?.stats ?? emptyStats(), now: nowSec() };
 }
 
 /* ---------------------------------------------------------- mutate */
 
 /**
- * Runs one change for a wallet: takes the wallet's lock (two phones take turns), reads the
- * chain once, settles every record against it, runs `fn`, then writes back what changed.
+ * Runs one change for a wallet: reads the chain once and the wallet's document, settles every
+ * record against the chain, runs `fn`, then writes the document back if anything changed. When
+ * another phone wrote first, it runs again on the fresh document (fn must only change ctx).
+ * @param {{ readOnly?: boolean }} opts  readOnly: never writes (strike.start)
  */
-async function mutate(owner, fn) {
-    return withLock(keys.ownerLock(owner), async () => {
-        const chain = getChain();
-        const snap = await chain.readOwner(owner);
+async function mutate(owner, fn, { readOnly = false } = {}) {
+    const chain = getChain();
+    const snap = await chain.readOwner(owner);
+    for (let attempt = 1; attempt <= WRITE_TRIES; attempt++) {
         const now = nowSec();
-        const [ records, stats ] = await Promise.all([ mgetJSON(snap.ids.map(keys.sword)), getJSON(keys.stats(owner)) ]);
-        const byId = Object.fromEntries(snap.ids.map((id, i) => [ id, records[i] ]));
-        const settled = settle(owner, snap.ids, snap.swords, byId, snap.furnaces, now, snap.rate);
+        const { rev, doc } = await loadDoc(owner, snap.ids);
+        const settled = settle(owner, snap.ids, snap.swords, doc.swords, snap.furnaces, now, snap.rate);
+        // A strike the previous version kept open is not used any more (tickets replaced it)
+        Object.values(settled.swords).forEach((s) => { if (s.strike) s.strike = null; });
         const chainById = Object.fromEntries(snap.ids.map((id, i) => [ id, snap.swords[i] ]));
-        const ctx = { owner: lower(owner), now, rate: snap.rate, settled, chainById, stats: stats ?? emptyStats(), isStatsChanged: false };
+        const ctx = {
+            owner: lower(owner), now, rate: snap.rate, settled, chainById,
+            stats: structuredClone(doc.stats ?? emptyStats()), isStatsChanged: false,
+            imported: { ...(doc.imported ?? {}) }, isImportChanged: false,
+        };
 
         const result = await fn(ctx);
+        const out = { result, game: viewState(settled, now, snap.rate), stats: ctx.stats };
+        if (readOnly || (!settled.changed.size && !ctx.isStatsChanged && !ctx.isImportChanged)) return out;
 
-        const writes = [ ...settled.changed ].map((id) => [ keys.sword(id), settled.swords[id] ]);
-        if (ctx.isStatsChanged) writes.push([ keys.stats(owner), ctx.stats ]);
-        if (writes.length) await msetJSON(writes);
-
-        return { result, game: viewState(settled, now, snap.rate), stats: ctx.stats };
-    });
+        // Swords that left the wallet are dropped; their next owner starts from the chain
+        const swords = Object.fromEntries(snap.ids.map((id) => [ id, settled.swords[id] ]));
+        const imported = Object.fromEntries(Object.entries(ctx.imported).filter(([ id, at ]) => String(chainById[id]?.syncedAt ?? "") === String(at)));
+        if (await writeDoc(owner, rev, { swords, stats: ctx.stats, imported, live: true })) return out;
+        await sleep(40 + Math.random() * 120 * attempt);
+    }
+    return busy();
 }
 
 const own = (ctx, tokenId) => {
@@ -109,42 +140,50 @@ const stopFurnace = (owner, tokenId) => mutate(owner, (ctx) => {
 
 /* ---------------------------------------------------------- strike */
 
-/** The roll the phone plays; the seed is salted on the server, so it cannot be known in advance */
-const startStrike = (owner, tokenId) => mutate(owner, (ctx) => {
-    const { id, sword, chain } = own(ctx, tokenId);
+const strikeChecks = (ctx, sword, chain) => {
     if (isListed(chain)) refuse("Cancel the listing before striking.");
     if (sword.furnace) refuse("Take the weapon out of the furnace before striking.");
     if (pointsOf(sword, ctx.rate) < 1) refuse("No strike points left. Heat the weapon in a furnace first.");
+};
 
-    const roll = rollFor(ctx.owner, sword, `${salt()}:${ctx.now}`);
-    const sessionId = `${id}-${sword.strikes}-${Math.random().toString(36).slice(2, 10)}`;
-    sword.strike = { id: sessionId, strikesAtStart: sword.strikes, startedAtMs: Date.now(), roll };
-    touch(ctx, id);
+/**
+ * The roll the phone plays. Its seed is salted on the server, so it cannot be known in advance,
+ * and it depends only on the weapon and its strike count: opening the strike again shows the
+ * same game, so there is no rolling again for an easier one. Nothing is written: the session id
+ * is a sealed ticket that says which strike this is and when it started.
+ */
+const startStrike = (owner, tokenId) => mutate(owner, (ctx) => {
+    const { id, sword, chain } = own(ctx, tokenId);
+    strikeChecks(ctx, sword, chain);
+    const roll = rollFor(ctx.owner, sword, salt());
+    const sessionId = seal("strike", { o: ctx.owner, t: id, s: sword.strikes, at: Date.now() });
     return { tokenId: id, sessionId, strikesAtStart: sword.strikes, ...roll };
-});
+}, { readOnly: true });
 
 /**
  * Scores the strike from the player's input log and grows the weapon. The log must replay to a
  * real game (scoring.js) and must not claim more play time than really passed since the start.
+ * The ticket is good for one strike: once it lands the weapon's strike count has moved on.
  */
 const finishStrike = (owner, tokenId, sessionId, log) => mutate(owner, (ctx) => {
-    const { id, sword } = own(ctx, tokenId);
-    const session = sword.strike;
-    if (!session || session.id !== String(sessionId) || session.strikesAtStart !== sword.strikes) refuse("This strike has expired. Start a new one.");
-    if (Date.now() - session.startedAtMs > STRIKE_TTL_MS) refuse("This strike took too long. Start a new one.");
-    if (sword.furnace) refuse("Take the weapon out of the furnace before striking.");
-    if (pointsOf(sword, ctx.rate) < 1) refuse("No strike points left. Heat the weapon in a furnace first.");
+    const { id, sword, chain } = own(ctx, tokenId);
+    const ticket = unseal("strike", sessionId);
+    if (!ticket || ticket.o !== ctx.owner || ticket.t !== id || ticket.s !== sword.strikes) refuse("This strike has expired. Start a new one.");
+    const startedAtMs = Number(ticket.at);
+    if (!(Date.now() - startedAtMs <= STRIKE_TTL_MS)) refuse("This strike took too long. Start a new one.");
+    strikeChecks(ctx, sword, chain);
 
+    const roll = rollFor(ctx.owner, sword, salt());
     let scored;
     try {
-        scored = scoreLog(session.roll, log);
+        scored = scoreLog(roll, log);
     } catch (error) {
         refuse(error.message);
     }
-    const realMs = Date.now() - session.startedAtMs;
+    const realMs = Date.now() - startedAtMs;
     if (realMs + CLOCK_SLACK_MS < COUNTDOWN_MS + scored.playMs) refuse("This strike finished faster than it can be played. Start a new one.");
 
-    const result = applyStrike(sword, ctx.stats, session.roll, scored.score, ctx.now, ctx.rate);
+    const result = applyStrike(sword, ctx.stats, roll, scored.score, ctx.now, ctx.rate);
     sword.strike = null;
     ctx.isStatsChanged = true;
     touch(ctx, id);
@@ -176,9 +215,15 @@ const importRecords = (owner, localRecords, localStats) => mutate(owner, async (
     const until = Number(process.env.IMPORT_UNTIL || 0);
     if (until && nowSec() > until) refuse("Moving progress from this phone has ended.");
 
+    const list = (Array.isArray(localRecords) ? localRecords : []).slice(0, MAX_IDS);
+    // Weapons the previous version already imported (one key each)
+    const candidates = list.map((r) => String(r?.tokenId ?? "")).filter((id) => ctx.chainById[id]);
+    const before = candidates.length ? await cmd("MGET", ...candidates.map((id) => keys.imported(id, ctx.chainById[id].syncedAt))) : [];
+    const wasImported = new Set(candidates.filter((_, i) => before[i]));
+
     const imported = [];
     const skipped = [];
-    for (const local of (Array.isArray(localRecords) ? localRecords : []).slice(0, MAX_IDS)) {
+    for (const local of list) {
         const id = String(local?.tokenId ?? "");
         const sword = ctx.settled.swords[id];
         const chain = ctx.chainById[id];
@@ -189,11 +234,13 @@ const importRecords = (owner, localRecords, localStats) => mutate(owner, async (
             skipped.push(id);
             continue;
         }
-        if (await cmd("SET", keys.imported(id, chain.syncedAt), "1", "NX", "EX", IMPORT_TTL_SEC) !== "OK") {
+        if (wasImported.has(id) || String(ctx.imported[id] ?? "") === String(chain.syncedAt)) {
             skipped.push(id);
             continue;
         }
 
+        ctx.imported[id] = String(chain.syncedAt);
+        ctx.isImportChanged = true;
         try {
             importOne(ctx, id, sword, chain, local);
             imported.push(id);
@@ -263,31 +310,38 @@ function importOne(ctx, id, sword, chain, local) {
  * the save landing on-chain.
  * @returns {Promise<{ tokenId: string, stats: object, nonce: bigint, now: number }[]>}
  */
-const statsToSign = (owner, tokenIds) => withLock(keys.ownerLock(owner), async () => {
+async function statsToSign(owner, tokenIds) {
     const ids = [ ...new Set(tokenIds.map(String)) ];
     const chain = getChain();
     const { swords, rate, now } = await chain.readSwords(ids);
-    const saved = await mgetJSON(ids.map(keys.sword));
-
-    const out = [];
-    const writes = [];
     ids.forEach((id, i) => {
-        const { sword: chainSword, owner: holder, nonce } = swords[i];
-        if (holder !== lower(owner)) refuse(`Weapon #${id} is not in this wallet.`);
-        const { sword } = resolveSword(id, owner, chainSword, saved[i]);
-        let stats;
-        try {
-            stats = statsForChain(sword, chainSword, now, rate);
-        } catch (error) {
-            refuse(error.message);
-        }
-        assertSignable(id, chainSword, stats, now, rate);
-        out.push({ tokenId: id, stats, nonce, now });
-        writes.push([ keys.sword(id), { ...structuredClone(sword), signed: { ...stats, nonce: nonce.toString() } } ]);
+        if (swords[i].owner !== lower(owner)) refuse(`Weapon #${id} is not in this wallet.`);
     });
-    await msetJSON(writes);
-    return out;
-});
+
+    for (let attempt = 1; attempt <= WRITE_TRIES; attempt++) {
+        let { rev, doc } = await readDoc(owner);
+        // No document yet: build it from every weapon the wallet owns, not just these
+        if (!doc) doc = (await loadDoc(owner, (await chain.readOwner(owner)).ids)).doc;
+
+        const out = [];
+        ids.forEach((id, i) => {
+            const { sword: chainSword, nonce } = swords[i];
+            const { sword } = resolveSword(id, owner, chainSword, doc.swords[id]);
+            let stats;
+            try {
+                stats = statsForChain(sword, chainSword, now, rate);
+            } catch (error) {
+                refuse(error.message);
+            }
+            assertSignable(id, chainSword, stats, now, rate);
+            out.push({ tokenId: id, stats, nonce, now });
+            doc.swords[id] = { ...structuredClone(sword), signed: { ...stats, nonce: nonce.toString() } };
+        });
+        if (await writeDoc(owner, rev, { ...doc, live: true })) return out;
+        await sleep(40 + Math.random() * 120 * attempt);
+    }
+    return busy();
+}
 
 /** The contract's _applyStats checks, plus the growth-formula rule the contract cannot afford */
 function assertSignable(id, s, next, now, rate) {
@@ -312,4 +366,4 @@ function assertSignable(id, s, next, now, rate) {
     }
 }
 
-export { readRecords, startFurnace, stopFurnace, startStrike, finishStrike, importRecords, statsToSign, formulaCap, setJSON };
+export { readRecords, startFurnace, stopFurnace, startStrike, finishStrike, importRecords, statsToSign, formulaCap };

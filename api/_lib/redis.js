@@ -68,30 +68,7 @@ const setJSON = (key, value, ttlSec) => (ttlSec ? cmd("SET", key, JSON.stringify
 /** Writes several JSON values in one round trip */
 const msetJSON = (entries) => pipeline(entries.map(([ key, value ]) => [ "SET", key, JSON.stringify(value) ]));
 
-/* ------------------------------------------------------------ locks */
-
-const UNLOCK = "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end";
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-/**
- * Runs fn while holding a short lock, so two phones acting on the same wallet take turns.
- * Waits up to ~3s for the lock, then gives up with a message the player can act on.
- */
-async function withLock(key, fn, { ttlMs = 10000, waitMs = 3000 } = {}) {
-    const token = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const until = Date.now() + waitMs;
-    for (;;) {
-        if (await cmd("SET", key, token, "NX", "PX", ttlMs) === "OK") break;
-        if (Date.now() > until) throw Object.assign(new Error("Another device is busy with this wallet. Try again in a moment."), { status: 409 });
-        await sleep(120);
-    }
-    try {
-        return await fn();
-    } finally {
-        await cmd("EVAL", UNLOCK, 1, key, token).catch(() => {});
-    }
-}
+/* ------------------------------------------------------------ limits */
 
 /**
  * Counts one hit and says whether the caller is still under `max` hits per `windowSec`.
@@ -110,4 +87,4 @@ async function scan(cursor, match, count = 200) {
     return { cursor: String(next), keys: found ?? [] };
 }
 
-export { setRedisFetch, cmd, pipeline, getJSON, mgetJSON, setJSON, msetJSON, withLock, underLimit, scan };
+export { setRedisFetch, cmd, pipeline, getJSON, mgetJSON, setJSON, msetJSON, underLimit, scan };

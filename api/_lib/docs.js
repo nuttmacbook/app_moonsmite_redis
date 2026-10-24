@@ -4,7 +4,8 @@
 // a write only lands if nobody else wrote since it was read (two phones never overwrite each
 // other), which replaces the per-wallet lock and its two extra commands.
 //
-//   { v: 1, swords: { [tokenId]: record }, stats, migratedAt? }
+//   { v: 1, swords: { [tokenId]: record }, stats, imported?: { [tokenId]: syncedAt }, live?, migratedAt? }
+// live: written by the game itself (not only copied by the admin sync), so a sync never replaces it
 
 import { cmd, mgetJSON, getJSON } from "./redis.js";
 import { keys } from "./keys.js";
