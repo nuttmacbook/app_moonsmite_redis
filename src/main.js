@@ -722,7 +722,13 @@ window.closeHireOut = guard(async (tokenId) => {
 
 window.blockHireSmith = guard(async (who) => {
     const out = await hire.blockSmith(data?.account, who);
-    notify.success({ title: "Smith blocked", desc: "They can't take your jobs any more." });
+    notify.success({ title: "Smith blocked for 72 hours", desc: "They can't take your jobs until then." });
+    applyGame(out);
+});
+
+window.unblockHireSmith = guard(async (who) => {
+    const out = await hire.blockSmith(data?.account, who, false);
+    notify.success({ title: "Smith unblocked", desc: "They can take your jobs again." });
     applyGame(out);
 });
 

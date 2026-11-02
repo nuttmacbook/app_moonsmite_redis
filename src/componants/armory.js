@@ -198,16 +198,39 @@ const statusOf = (chainSword, play) => {
 
 const hasUnsavedOf = (play) => play?.unsaved?.strikes > 0 || play?.unsaved?.minutes > 0;
 
+/** Smiths this owner blocked, with the time left and a way to lift it early */
+const blockedCard = (hire) => {
+    const list = hire?.blocked ?? [];
+    if (!list.length) return "";
+    return /*html*/`
+        <details class="${CARD} p-3">
+            <summary class="cursor-pointer text-sm font-semibold text-slate-200 ${FOCUS}">Smiths you blocked (${list.length})</summary>
+            <p class="mt-1 text-[11px] text-slate-400">They can't take your jobs until the block runs out (72 hours).</p>
+            <div class="mt-2 flex flex-col divide-y divide-white/5">
+                ${list.map((who) => /*html*/`
+                    <div class="flex items-center justify-between gap-3 py-2 text-xs">
+                        <span class="min-w-0 truncate font-mono text-slate-300">${shortAddress(who)}</span>
+                        <span class="flex shrink-0 items-center gap-3">
+                            <span class="text-slate-400">ends in <span data-countdown data-target="${Number(hire?.blockedUntil?.[who] ?? 0)}" class="font-mono tabular-nums text-slate-200">—</span></span>
+                            <button type="button" onclick="unblockHireSmith('${who}')" class="${BUTTON.small}">Unblock</button>
+                        </span>
+                    </div>`).join("")}
+            </div>
+        </details>`;
+};
+
 /** Out for hire, or owing smiths wages: both keep it from heating, saving and selling */
-const hireOf = (hire, id) => {
-    const job = hire?.jobs?.[String(id)] ?? null;
+const hireOf = (hire, id, points = Infinity) => {
+    const raw = hire?.jobs?.[String(id)] ?? null;
+    // A hire that is over is already the owner's again: closing with no smith, or no points and no smith
+    const job = raw && !raw.ended && !(points < 1 && !raw.smith) ? raw : null;
     const wages = hire?.wages?.[String(id)] ?? null;
     return { job, wages, isHired: Boolean(job), owes: Boolean(wages) && BigInt(wages.total ?? 0) > 0n };
 };
 
 /** A weapon can be saved when it is idle, unlisted, not out for hire, owes no wages and has progress not on-chain yet */
 const isSavable = (chainSword, play, hire, id) => {
-    const h = hireOf(hire, id);
+    const h = hireOf(hire, id, Number(play?.points ?? Infinity));
     return statusOf(chainSword, play) === "idle" && hasUnsavedOf(play) && !h.isHired && !h.owes;
 };
 
@@ -229,7 +252,7 @@ const swordCard = (id, chainSword, play, hasFreeFurnace, now, feeBps, hire, rule
     const hours = hasUnsaved ? unsavedHours(play, now) : 0;
     const isStale = hours >= STALE_HOURS;
     const canSave = isSavable(chainSword, play, hire, id);
-    const { job, wages, isHired, owes } = hireOf(hire, id);
+    const { job, wages, isHired, owes } = hireOf(hire, id, Number(play?.points ?? Infinity));
     const log = hire?.log?.[String(id)] ?? [];
     const isPicked = view.selected.has(String(id));
     const isOpen = view.open.has(String(id)) && !view.isSaveMode;
@@ -466,6 +489,7 @@ const armory = (data) => {
                     <button type="button" onclick="enterSaveMode(${JSON.stringify(stale.slice(0, MAX_SAVE).map((r) => r.id)).replace(/"/g, "'")})" class="${BUTTON.heat}">Save them</button>
                 </div>
             ` : ""}
+            ${view.isSaveMode ? "" : blockedCard(hire)}
 
             ${view.isSaveMode ? /*html*/`
                 <div class="cut flex flex-wrap items-center justify-between gap-3 bg-amber-300/[0.08] px-3 py-2 shadow-[inset_0_0_0_1px_rgba(252,211,77,0.3)]">

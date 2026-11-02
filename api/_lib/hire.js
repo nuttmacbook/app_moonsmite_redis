@@ -7,7 +7,7 @@
 //                   hireLog[tokenId] last strikes by smiths
 //                   paid            { count, total, bills: [billId] }          bills already counted
 //                   bills[tokenId]  the one live bill (signed, unpaid) so wages can't be billed twice
-//                   blocked         [smith]
+//                   blocked         [{ smith, until }]  blocks end after HIRE.blockSec (72h)
 //   smith document  license, job { owner, tokenId }, stats, pending { "<owner>:<tokenId>": { wei, since } }
 //   jobs index      { [tokenId]: owner }  every weapon open for hire (the board reads the owners from it)
 //
@@ -70,6 +70,19 @@ const hireOf = (doc) => ({
     blocked: doc?.blocked ?? [],
 });
 
+// Blocks from before blocks had an end time (plain addresses) are lifted with this update
+const LEGACY_BLOCK_UNTIL = 0;
+
+/** The blocks still running, as { smith, until }; old plain-address entries included */
+const blocksOf = (list, now = nowSec()) => (Array.isArray(list) ? list : [])
+    .map((x) => (typeof x === "string" ? { smith: lower(x), until: LEGACY_BLOCK_UNTIL } : { smith: lower(x?.smith), until: Number(x?.until) || 0 }))
+    .filter((b) => /^0x[0-9a-f]{40}$/.test(b.smith) && b.until > now);
+
+const isBlockedBy = (list, smith, now = nowSec()) => blocksOf(list, now).some((b) => b.smith === lower(smith));
+
+/** A hire nobody can work any more: closing with no smith on it, or out of strike points with no smith on it */
+const isHireOver = (rent, points, now = nowSec()) => !isLockActive(rent?.lock, now) && (Boolean(rent?.closing) || points < 1);
+
 const isLockActive = (lock, now = nowSec()) => Boolean(lock?.smith) && now - Number(lock.lastAt ?? 0) < HIRE.lockIdleSec;
 
 const owedTotal = (bySmith) => Object.values(bySmith ?? {}).reduce((sum, x) => sum + BigInt(x?.wei ?? 0), 0n);
@@ -92,11 +105,14 @@ const workScoreOf = (stats) => {
  * Sent with every game state, so the armory can lock buttons without asking again.
  */
 function hireView(doc, now = nowSec()) {
-    const { rent, owed, hireLog, paid, blocked } = hireOf(doc);
+    const { rent, owed, hireLog, paid } = hireOf(doc);
+    const blocks = blocksOf(doc?.blocked, now);
     const jobs = Object.fromEntries(Object.entries(rent).map(([ id, r ]) => {
         const isBusy = isLockActive(r.lock, now);
         return [ id, {
             minScore: r.minScore, share: r.share, openedAt: r.openedAt, closing: Boolean(r.closing),
+            // Closing and nobody on it: already back with the owner (the next save of the document drops it)
+            ended: Boolean(r.closing) && !isBusy,
             smith: isBusy ? r.lock.smith : null,
             freeAt: isBusy ? Number(r.lock.lastAt) + HIRE.lockIdleSec : 0,
         } ];
@@ -114,7 +130,8 @@ function hireView(doc, now = nowSec()) {
         wages,
         log: hireLog,
         paid: { count: Number(paid.count ?? 0), total: String(paid.total ?? "0") },
-        blocked,
+        blocked: blocks.map((b) => b.smith),
+        blockedUntil: Object.fromEntries(blocks.map((b) => [ b.smith, b.until ])),
         oldestOwed: oldestOwed(owed),
     };
 }
@@ -291,7 +308,8 @@ async function listJobs() {
             share: rent.share, minScore: rent.minScore, openedAt: rent.openedAt,
             isBusy, freeAt: isBusy ? Number(rent.lock.lastAt) + HIRE.lockIdleSec : 0,
             ownerOwed: allOwed(owed).toString(), ownerOwedSince: oldestOwed(owed), ownerPaid: Number(paid.count ?? 0),
-            blocked: doc?.blocked ?? [],
+            blocked: blocksOf(doc?.blocked, now).map((b) => b.smith),
+            blockedUntil: Object.fromEntries(blocksOf(doc?.blocked, now).map((b) => [ b.smith, b.until ])),
         };
     }).filter(Boolean).sort((a, b) => b.share - a.share || b.points - a.points);
     return { isOn: true, items, now };
@@ -319,7 +337,7 @@ async function takeJob(smith, owner, tokenId) {
         if (!rent || rent.closing) refuse("This job is closed.");
         if (!smithDoc.license) refuse("Pass the licensing exam first.");
         if (Number(smithDoc.license.best) < Number(rent.minScore)) refuse(`This job needs a license score of ${rent.minScore}.`);
-        if ((ownerDoc.blocked ?? []).includes(lower(smith))) refuse("This owner does not take your jobs.");
+        if (isBlockedBy(ownerDoc.blocked, smith, now)) refuse("This owner has blocked you for now. Try other jobs.");
         if (isLockActive(rent.lock, now) && lower(rent.lock.smith) !== lower(smith)) refuse("Another smith is on this job. Try again later.");
 
         // Holding another job: it has to end first (a stale pointer to a lapsed lock does not count)
@@ -444,7 +462,8 @@ async function finishHireStrike(smith, sessionId, log) {
         const isOut = pointsOf(sword, rate) < 1;
         const rent = { ...ownerDoc.rent };
         const indexOps = [];
-        if (isOut && held.rent.closing) {
+        // Out of points: the hire ends and the weapon is back with its owner, ready to heat again
+        if (isOut) {
             delete rent[t.t];
             indexOps.push([ "del", t.t ]);
         } else {
@@ -570,7 +589,7 @@ async function confirmBill(owner, token) {
 }
 
 export {
-    isHireOn, requireHire, wagesAddress, isLockActive, owedTotal, oldestOwed, hireOf, hireView, updateIndex,
+    isHireOn, requireHire, blocksOf, isBlockedBy, isHireOver, wagesAddress, isLockActive, owedTotal, oldestOwed, hireOf, hireView, updateIndex,
     startExam, finishExam, examRounds, getSmith, listJobs, takeJob, releaseJob, startHireStrike, finishHireStrike,
     makeBill, confirmBill, BILL_TYPES,
 };

@@ -171,7 +171,7 @@ const jobItem = (item, data, view) => {
         : item.isBusy ? `<button type="button" class="${BUTTON.ghost} w-full" disabled>Smith at work · free in ${countdown(item.freeAt)}</button>`
         : !page?.license ? `<button type="button" class="${BUTTON.ghost} w-full" disabled>Pass the exam first</button>`
         : needsMore ? `<button type="button" class="${BUTTON.ghost} w-full" disabled>Needs license ${item.minScore}</button>`
-        : isBlocked ? `<button type="button" class="${BUTTON.ghost} w-full" disabled>Not open to you</button>`
+        : isBlocked ? `<button type="button" class="${BUTTON.ghost} w-full" disabled>Blocked · ${countdown(item.blockedUntil?.[me])} left</button>`
         : hasJob ? `<button type="button" class="${BUTTON.ghost} w-full" disabled>Finish your job first</button>`
         : `<button type="button" onclick="takeSmithJob('${item.owner}', '${item.tokenId}')" class="${BUTTON.primary} w-full">Take job</button>`;
 
@@ -196,6 +196,28 @@ const jobItem = (item, data, view) => {
         ${button}
     </article>
     `;
+};
+
+/** Owners on the board who blocked this smith, with the time each block has left */
+const blockedByCard = (data, view) => {
+    const me = String(data?.account ?? "").toLowerCase();
+    const owners = new Map();
+    for (const item of view?.items ?? []) {
+        if ((item.blocked ?? []).includes(me)) owners.set(item.owner, Number(item.blockedUntil?.[me] ?? 0));
+    }
+    if (!owners.size) return "";
+    return /*html*/`
+    <section class="${CARD} flex flex-col gap-2 p-4">
+        <p class="text-[10px] font-semibold uppercase tracking-[0.24em] text-rose-200/80">Owners who blocked you</p>
+        <p class="text-xs text-slate-400">You can't take their jobs until the block runs out. Every other job is open to you.</p>
+        <div class="flex flex-col divide-y divide-white/5">
+            ${[ ...owners ].map(([ owner, until ]) => /*html*/`
+                <div class="flex items-center justify-between gap-3 py-2 text-xs">
+                    <span class="min-w-0 truncate font-mono text-slate-300">${shortAddress(owner)}</span>
+                    <span class="shrink-0 text-slate-400">ends in ${countdown(until)}</span>
+                </div>`).join("")}
+        </div>
+    </section>`;
 };
 
 /** The board on its own, so it can refresh without repainting the tab (data-jobs-results) */
@@ -238,6 +260,7 @@ const smith = (data, view) => {
                 ${jobCard(page)}
                 ${licenseCard(page, now)}
                 ${page.license || BigInt(page.pendingTotal ?? 0) > 0n ? wagesCard(page, data?.wagesInfo) : ""}
+                ${blockedByCard(data, view)}
             </div>
             <div class="flex min-w-0 flex-col gap-3">
                 <div class="flex items-center gap-2">

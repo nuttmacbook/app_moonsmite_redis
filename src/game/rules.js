@@ -82,6 +82,7 @@ const HIRE = {
     billTtlSec:      60 * 60,       // a wages bill must go on-chain within this time
     maxBillSmiths:   20,            // smiths paid by one bill
     maxBlocked:      100,           // smiths one owner can block
+    blockSec:        72 * 60 * 60,  // a block lasts 72 hours, then the smith can take that owner's jobs again
 };
 /* ===================================================================== */
 

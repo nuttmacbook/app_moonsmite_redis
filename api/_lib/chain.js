@@ -1,16 +1,31 @@
 // Chain reads for the game server. Every request is one eth_call through Multicall3
 // (already deployed on BSC and BSC testnet), so a whole wallet costs a single RPC request.
-// Env: FORGE_ADDRESS (or VITE_FORGE_ADDRESS), RPC_URL (server only; falls back to VITE_RPC_URL,
-// then the public RPC of VITE_CHAIN), WAGES_ADDRESS (or VITE_WAGES_ADDRESS) for smith wages.
+// Env: FORGE_ADDRESS (or VITE_FORGE_ADDRESS), RPC_URL (server only, may list several separated by
+// commas; falls back to VITE_RPC_URL), WAGES_ADDRESS (or VITE_WAGES_ADDRESS) for smith wages.
+// The public RPCs of VITE_CHAIN are always tried after your own, one after another when busy.
 
-import { JsonRpcProvider, Contract, Interface, isAddress } from "ethers";
+import { JsonRpcProvider, FetchRequest, Network, Contract, Interface, isAddress } from "ethers";
 import { rateFrom } from "../../src/game/rules.js";
 
 const MULTICALL3 = "0xcA11bde05977b3631167028862bE2a173976CA11";
 const PUBLIC_RPC = {
-    bsc: "https://bsc-dataseed.bnbchain.org",
-    bscTestnet: "https://data-seed-prebsc-1-s1.bnbchain.org:8545",
+    bsc: [ "https://bsc-dataseed.bnbchain.org", "https://bsc-dataseed1.binance.org", "https://bsc-dataseed2.binance.org", "https://bsc-dataseed1.defibit.io", "https://bsc-rpc.publicnode.com" ],
+    bscTestnet: [ "https://data-seed-prebsc-1-s1.bnbchain.org:8545", "https://data-seed-prebsc-2-s1.bnbchain.org:8545", "https://bsc-testnet-rpc.publicnode.com" ],
 };
+const CHAIN_IDS = { bsc: 56, bscTestnet: 97 };
+
+// ethers on its own retries a busy (429) endpoint many times and waits up to 5 minutes per call;
+// one quick try per endpoint, then the next one, keeps a request inside the function's time limit
+const RPC_TIMEOUT_MS = 8000;
+const requestOf = (url) => {
+    const req = new FetchRequest(url);
+    req.timeout = RPC_TIMEOUT_MS;
+    req.setThrottleParams({ maxAttempts: 1 });
+    return req;
+};
+
+/** A revert is an answer; anything else (429, 5xx, timeout, no connection) is worth the next endpoint */
+const isRetryable = (error) => ![ "CALL_EXCEPTION", "INVALID_ARGUMENT", "BAD_DATA" ].includes(error?.code);
 const LISTING_PAGE = 300;
 
 const SWORD = "(uint256 value,uint256 points,uint256 furnaceMinutes,uint256 strikes,uint256 totalScore,uint256 syncedAt,uint256 listPrice,uint256 mintPrice,uint256 seed)";
@@ -40,10 +55,30 @@ const swordOf = (r) => ({
     syncedAt: r.syncedAt, listPrice: r.listPrice, mintPrice: r.mintPrice, seed: r.seed,
 });
 
-function ethersChain({ rpc, forgeAddress, wagesAddress = "", runner } = {}) {
-    const provider = runner ?? new JsonRpcProvider(rpc, undefined, { batchMaxCount: 1 });
-    const multicall = new Contract(MULTICALL3, MULTI, provider);
+function ethersChain({ rpc, rpcs, chainIdHint, forgeAddress, wagesAddress = "", runner } = {}) {
+    // A known network means ethers never stalls asking a dead endpoint which chain it is
+    const network = chainIdHint ? Network.from(chainIdHint) : undefined;
+    const providers = runner ? [ runner ] : (rpcs ?? [ rpc ]).filter(Boolean)
+        .map((url) => new JsonRpcProvider(requestOf(url), network, { batchMaxCount: 1, staticNetwork: Boolean(network) }));
+    let good = 0;
     let chainId = null;
+
+    /** Runs fn on the endpoint that worked last, then the others in turn */
+    const withProvider = async (fn) => {
+        let lastError;
+        for (let i = 0; i < providers.length; i++) {
+            const at = (good + i) % providers.length;
+            try {
+                const out = await fn(providers[at]);
+                good = at;
+                return out;
+            } catch (error) {
+                lastError = error;
+                if (!isRetryable(error)) throw error;
+            }
+        }
+        throw lastError;
+    };
 
     /**
      * Runs calls on the Forge contract plus the block time in one eth_call.
@@ -54,7 +89,7 @@ function ethersChain({ rpc, forgeAddress, wagesAddress = "", runner } = {}) {
             ...calls.map(([ fn, args ]) => ({ target: forgeAddress, allowFailure: false, callData: FORGE.encodeFunctionData(fn, args) })),
             { target: MULTICALL3, allowFailure: false, callData: MULTI.encodeFunctionData("getCurrentBlockTimestamp", []) },
         ];
-        const results = await multicall.aggregate3.staticCall(encoded);
+        const results = await withProvider((provider) => new Contract(MULTICALL3, MULTI, provider).aggregate3.staticCall(encoded));
         const out = calls.map(([ fn ], i) => FORGE.decodeFunctionResult(fn, results[i].returnData));
         const [ now ] = MULTI.decodeFunctionResult("getCurrentBlockTimestamp", results[calls.length].returnData);
         return { out, now: Number(now) };
@@ -67,12 +102,12 @@ function ethersChain({ rpc, forgeAddress, wagesAddress = "", runner } = {}) {
         /** Whether a wages bill the server signed has been paid into the Wages contract */
         async isBillPaid(billId) {
             if (!wagesAddress) return false;
-            const data = await provider.call({ to: wagesAddress, data: WAGES.encodeFunctionData("isBillPaid", [ billId ]) });
+            const data = await withProvider((provider) => provider.call({ to: wagesAddress, data: WAGES.encodeFunctionData("isBillPaid", [ billId ]) }));
             return Boolean(WAGES.decodeFunctionResult("isBillPaid", data)[0]);
         },
 
         async chainId() {
-            if (chainId === null) chainId = (await provider.getNetwork?.())?.chainId ?? 0n;
+            if (chainId === null) chainId = network ? network.chainId : (await withProvider((provider) => provider.getNetwork?.()))?.chainId ?? 0n;
             return chainId;
         },
 
@@ -133,10 +168,12 @@ const getChain = () => {
     // Skips empty values and leftover placeholders like "https://..."
     const envOf = (...names) => names.map((n) => String(process.env[n] ?? "").trim()).find((v) => v && !v.includes("...")) ?? "";
     const forgeAddress = envOf("FORGE_ADDRESS", "VITE_FORGE_ADDRESS");
-    const rpc = envOf("RPC_URL", "VITE_RPC_URL") || PUBLIC_RPC[envOf("VITE_CHAIN") || "bsc"];
-    if (!isAddress(forgeAddress || "") || !rpc) throw new Error("Chain is not configured (FORGE_ADDRESS, RPC_URL)");
+    const chainName = envOf("VITE_CHAIN") || "bsc";
+    const own = envOf("RPC_URL", "VITE_RPC_URL").split(",").map((x) => x.trim()).filter((x) => /^https?:\/\//.test(x));
+    const rpcs = [ ...new Set([ ...own, ...(PUBLIC_RPC[chainName] ?? []) ]) ];
+    if (!isAddress(forgeAddress || "") || !rpcs.length) throw new Error("Chain is not configured (FORGE_ADDRESS, RPC_URL)");
     const wagesAddress = envOf("WAGES_ADDRESS", "VITE_WAGES_ADDRESS");
-    current = ethersChain({ rpc, forgeAddress, wagesAddress: isAddress(wagesAddress || "") ? wagesAddress : "" });
+    current = ethersChain({ rpcs, chainIdHint: CHAIN_IDS[chainName], forgeAddress, wagesAddress: isAddress(wagesAddress || "") ? wagesAddress : "" });
     return current;
 };
 

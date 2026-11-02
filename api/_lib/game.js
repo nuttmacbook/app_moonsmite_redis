@@ -16,7 +16,7 @@ import { cmd } from "./redis.js";
 import { refuse } from "./http.js";
 import { readDoc, writeDoc, legacyDoc } from "./docs.js";
 import { seal, unseal } from "./seal.js";
-import { requireHire, isLockActive, owedTotal, oldestOwed, hireView, updateIndex, makeBill, confirmBill } from "./hire.js";
+import { requireHire, isLockActive, owedTotal, oldestOwed, hireView, updateIndex, makeBill, confirmBill, blocksOf, isHireOver } from "./hire.js";
 import {
     settle, viewState, coolDown, pointsOf, rollFor, applyStrike, emptyStats, statsForChain,
     resolveSword, baseOf, maxValue, FURNACE_CAP, HIRE,
@@ -87,7 +87,7 @@ async function mutate(owner, fn, { readOnly = false } = {}) {
             owner: lower(owner), now, rate: snap.rate, settled, chainById,
             stats: structuredClone(doc.stats ?? emptyStats()), isStatsChanged: false,
             imported: { ...(doc.imported ?? {}) }, isImportChanged: false,
-            rent: structuredClone(doc.rent ?? {}), blocked: [ ...(doc.blocked ?? []) ], owed: doc.owed ?? {},
+            rent: structuredClone(doc.rent ?? {}), blocked: blocksOf(doc.blocked, now), owed: doc.owed ?? {},
             isHireChanged: false, indexOps: [],
         };
         settleHire(ctx);
@@ -111,13 +111,14 @@ async function mutate(owner, fn, { readOnly = false } = {}) {
 }
 
 /**
- * Hires that can no longer run end here: the weapon left the wallet or was listed, or the owner
- * asked to close it and no smith is on it any more.
+ * Hires that can no longer run end here: the weapon left the wallet or was listed, the owner asked
+ * to close it and no smith is on it any more, or it ran out of strike points with no smith on it.
  */
 function settleHire(ctx) {
     Object.entries(ctx.rent).forEach(([ id, r ]) => {
         const isGone = !ctx.settled.swords[id] || isListed(ctx.chainById[id]);
-        if (isGone || (r.closing && !isLockActive(r.lock, ctx.now))) {
+        const points = ctx.settled.swords[id] ? pointsOf(ctx.settled.swords[id], ctx.rate) : 0;
+        if (isGone || isHireOver(r, points, ctx.now)) {
             delete ctx.rent[id];
             ctx.indexOps.push([ "del", id ]);
             ctx.isHireChanged = true;
@@ -452,20 +453,21 @@ const closeHire = (owner, tokenId) => mutate(owner, (ctx) => {
     return { tokenId: id, isClosing: false };
 });
 
-/** Stops a smith from taking this owner's jobs; a job they hold now ends */
+/** Stops a smith from taking this owner's jobs for 72 hours; a job they hold now ends */
 const blockSmith = (owner, smith, isBlocked = true) => mutate(owner, (ctx) => {
     const who = lower(smith);
     if (!/^0x[0-9a-f]{40}$/.test(who)) refuse("That wallet address is not valid.");
-    ctx.blocked = ctx.blocked.filter((x) => x !== who);
+    ctx.blocked = ctx.blocked.filter((b) => b.smith !== who);
+    const until = ctx.now + HIRE.blockSec;
     if (isBlocked) {
-        if (ctx.blocked.length >= HIRE.maxBlocked) refuse(`You can block up to ${HIRE.maxBlocked} smiths.`);
-        ctx.blocked.push(who);
+        if (ctx.blocked.length >= HIRE.maxBlocked) refuse(`You can block up to ${HIRE.maxBlocked} smiths at a time.`);
+        ctx.blocked.push({ smith: who, until });
         Object.entries(ctx.rent).forEach(([ id, r ]) => {
             if (lower(r.lock?.smith) === who) ctx.rent[id] = { ...r, lock: null };
         });
     }
     ctx.isHireChanged = true;
-    return { smith: who, isBlocked };
+    return { smith: who, isBlocked, until: isBlocked ? until : 0 };
 });
 
 /**

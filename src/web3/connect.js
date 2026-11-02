@@ -35,6 +35,23 @@ readAsArrays(box);
 
 const { shortAddress, formNumber, timestampToUTC, delay } = utils;
 
+// Public endpoints tried in turn when one is busy (they rate-limit each visitor separately)
+const PUBLIC_RPCS = {
+    bsc: [
+        "https://bsc-dataseed.bnbchain.org",
+        "https://bsc-dataseed1.binance.org",
+        "https://bsc-dataseed2.binance.org",
+        "https://bsc-dataseed1.defibit.io",
+        "https://bsc-rpc.publicnode.com",
+        "https://1rpc.io/bnb",
+    ],
+    bscTestnet: [
+        "https://data-seed-prebsc-1-s1.bnbchain.org:8545",
+        "https://data-seed-prebsc-2-s1.bnbchain.org:8545",
+        "https://bsc-testnet-rpc.publicnode.com",
+    ],
+};
+
 /** RPC for reads: your own VITE_RPC_URL if set, else the chain's RPC from kitbox */
 const getRpc = () => {
     if (import.meta.env.VITE_RPC_URL) return import.meta.env.VITE_RPC_URL;
@@ -47,4 +64,7 @@ const getRpc = () => {
 
 const disconnectWallet = async () => modal?.disconnect?.();
 
-export { box, modal, CHAIN_ID, getRpc, disconnectWallet, shortAddress, formNumber, timestampToUTC, delay };
+/** Every endpoint reads may use, best first: your own VITE_RPC_URL, then kitbox's, then the public list */
+const getRpcs = () => [ ...new Set([ getRpc(), ...(PUBLIC_RPCS[import.meta.env.VITE_CHAIN ?? "bsc"] ?? []) ].filter(Boolean)) ];
+
+export { box, modal, CHAIN_ID, getRpc, getRpcs, disconnectWallet, shortAddress, formNumber, timestampToUTC, delay };

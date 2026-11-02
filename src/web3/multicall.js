@@ -1,5 +1,5 @@
 import { Interface } from "ethers";
-import { getRpc } from "./connect";
+import { getRpcs } from "./connect";
 
 // Many contract reads in one RPC request, through Multicall3 (the same address on every EVM chain).
 // The page used to send one request per read (8 on every refresh); public RPCs rate-limit that
@@ -12,7 +12,8 @@ const MULTI = new Interface([
     "function aggregate3((address target, bool allowFailure, bytes callData)[] calls) payable returns ((bool success, bytes returnData)[] returnData)",
     "function getCurrentBlockTimestamp() view returns (uint256 timestamp)",
 ]);
-const RETRIES = 3;
+const RETRIES = 6;
+let good = 0;   // the endpoint that answered last; the next read starts there
 
 const interfaces = new Map();
 const interfaceOf = (abi) => {
@@ -36,13 +37,20 @@ const plain = (value, type) => {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** One eth_call, retried with backoff when the RPC says slow down (429) or the network blips */
+/**
+ * One eth_call. When an endpoint says slow down (429), fails (5xx) or cannot be reached, the next
+ * public endpoint is tried at once, then the list goes round again with a short backoff. One busy
+ * public RPC used to stop the whole page from loading.
+ */
 async function ethCall(to, data) {
+    const rpcs = getRpcs();
+    const tries = Math.max(RETRIES, rpcs.length + 2);
     let lastError;
-    for (let i = 0; i < RETRIES; i++) {
-        if (i) await sleep(400 * 2 ** i + Math.random() * 300);
+    for (let i = 0; i < tries; i++) {
+        const at = (good + i) % rpcs.length;
+        if (i >= rpcs.length) await sleep(300 * 2 ** Math.min(3, i - rpcs.length) + Math.random() * 300);
         try {
-            const res = await fetch(getRpc(), {
+            const res = await fetch(rpcs[at], {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_call", params: [ { to, data }, "latest" ] }),
@@ -60,6 +68,7 @@ async function ethCall(to, data) {
                 }
                 throw new Error(json.error.message ?? "Reading the chain failed.");
             }
+            good = at;
             return json.result;
         } catch (error) {
             lastError = error;
